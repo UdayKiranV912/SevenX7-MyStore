@@ -1,0 +1,7 @@
+{
+  "name": "Grocesphere",
+  "description": "Hyper-local grocery delivery connecting you to community marts with real-time tracking.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
