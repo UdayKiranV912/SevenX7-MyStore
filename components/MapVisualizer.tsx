@@ -1,3 +1,4 @@
+
 import React, { useEffect, useRef, useState } from 'react';
 import { Store, OrderMode } from '../types';
 
@@ -35,6 +36,12 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   const routeLineRef = useRef<any>(null);
   const clickHandlerRef = useRef<any>(null);
   
+  // Track previous props to determine what changed
+  const prevStoreLat = useRef<number | undefined>(selectedStore?.lat);
+  const prevStoreLng = useRef<number | undefined>(selectedStore?.lng);
+  const prevUserLat = useRef<number | null>(userLat);
+  const prevUserLng = useRef<number | null>(userLng);
+
   // Center fallback: Bangalore or Store
   const mapCenterLat = selectedStore ? selectedStore.lat : (userLat || 12.9716);
   const mapCenterLng = selectedStore ? selectedStore.lng : (userLng || 77.5946);
@@ -62,26 +69,34 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     }
   });
 
-  // View Update Logic
+  // View Update Logic - Intelligent FlyTo
   useEffect(() => {
       if (!mapInstanceRef.current) return;
       
-      const targetLat = selectedStore?.lat || userLat;
-      const targetLng = selectedStore?.lng || userLng;
+      const storeChanged = selectedStore?.lat !== prevStoreLat.current || selectedStore?.lng !== prevStoreLng.current;
+      const userChanged = userLat !== prevUserLat.current || userLng !== prevUserLng.current;
+      
+      // Update refs for next render
+      prevStoreLat.current = selectedStore?.lat;
+      prevStoreLng.current = selectedStore?.lng;
+      prevUserLat.current = userLat;
+      prevUserLng.current = userLng;
 
-      if (targetLat && targetLng) {
-          const currentCenter = mapInstanceRef.current.getCenter();
-          const dist = Math.sqrt(
-              Math.pow(currentCenter.lat - targetLat, 2) + 
-              Math.pow(currentCenter.lng - targetLng, 2)
-          );
-          
-          // Fly if distance > 50m OR if we are in manual edit mode (onMapClick present)
-          if (dist > 0.0005 || onMapClick) {
-              mapInstanceRef.current.flyTo([targetLat, targetLng], 16, { duration: 1 });
-          }
+      // Logic:
+      // 1. If we are manually pinning (onMapClick), don't auto-move unless it's the very first load or store changed (which happens when pin moves).
+      // 2. If Store Changed, fly to Store.
+      // 3. If User Changed, fly to User.
+      
+      if (storeChanged && selectedStore) {
+          mapInstanceRef.current.flyTo([selectedStore.lat, selectedStore.lng], 16, { duration: 1 });
+      } else if (userChanged && userLat && userLng) {
+          mapInstanceRef.current.flyTo([userLat, userLng], 16, { duration: 1 });
+      } else if (!selectedStore && userLat && userLng && !prevUserLat.current) {
+          // Initial user load with no store
+          mapInstanceRef.current.setView([userLat, userLng], 16);
       }
-  }, [selectedStore?.lat, selectedStore?.lng, userLat, userLng, onMapClick]);
+
+  }, [selectedStore?.lat, selectedStore?.lng, userLat, userLng]);
 
   const calculateDist = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     const R = 6371; 
@@ -118,7 +133,8 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
         setTimeout(() => setIsLocating(false), 500);
     } else if (onRequestLocation) {
         onRequestLocation();
-        setTimeout(() => setIsLocating(false), 10000);
+        // Fallback timeout
+        setTimeout(() => setIsLocating(false), 8000);
     } else {
         setIsLocating(false);
     }
@@ -184,11 +200,12 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
              }).addTo(mapInstanceRef.current);
         } else {
             userMarkerRef.current.setLatLng([userLat, userLng]);
+            userMarkerRef.current.setOpacity(1);
         }
     } else {
         if (userMarkerRef.current) {
-            mapInstanceRef.current.removeLayer(userMarkerRef.current);
-            userMarkerRef.current = null;
+            // Instead of removing, just hide, to avoid flicker
+            userMarkerRef.current.setOpacity(0);
         }
     }
 

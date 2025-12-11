@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { UserState, Store, Order, InventoryItem } from '../../types';
 import { getMyStore, getStoreInventory, updateInventoryItem, deleteInventoryItem, getIncomingOrders, updateStoreOrderStatus, updateStoreProfile } from '../../services/storeAdminService';
@@ -35,48 +36,70 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
   const totalRevenue = orders.reduce((sum, o) => sum + o.total, 0);
   const pendingOrders = orders.filter(o => o.status === 'Placed' || o.status === 'Accepted' || o.status === 'Preparing').length;
 
-  // Helper: Reliable GPS Fetch with Demo Fallback
+  // Helper: One-time GPS Fetch (for buttons)
   const fetchGpsLocation = async (): Promise<{lat: number, lng: number}> => {
       return new Promise((resolve, reject) => {
-          // If browser doesn't support geolocation
           if (!navigator.geolocation) {
               if (user.id === 'demo-user') return resolve({ lat: 12.9716, lng: 77.5946 });
               return reject(new Error("Geolocation not supported"));
           }
-
-          const success = (pos: GeolocationPosition) => {
-              resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-          };
-
-          const error = (err: GeolocationPositionError) => {
-              // Fallback for Demo User immediately on error
-              if (user.id === 'demo-user') {
-                  console.log("GPS Failed/Denied, using Demo Fallback");
-                  return resolve({ lat: 12.9716, lng: 77.5946 });
-              }
-              reject(err);
-          };
-
-          navigator.geolocation.getCurrentPosition(success, error, { 
-              enableHighAccuracy: true, 
-              timeout: user.id === 'demo-user' ? 3000 : 8000 // Faster timeout for demo
-          });
+          navigator.geolocation.getCurrentPosition(
+              (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+              (err) => {
+                  if (user.id === 'demo-user') return resolve({ lat: 12.9716, lng: 77.5946 });
+                  reject(err);
+              },
+              { enableHighAccuracy: true, timeout: 10000 }
+          );
       });
   };
 
-  // 0. Auto-Fetch Location on Mount
+  // 0. LIVE GPS Tracking (watchPosition)
   useEffect(() => {
-      const initLocation = async () => {
-          try {
-              const loc = await fetchGpsLocation();
-              setUserLocation(loc);
-          } catch (e) {
-              console.warn("Auto-location fetch failed:", e);
-              // Silent fail on auto-fetch, user can click button manually
+      let watchId: number;
+      let demoInterval: any;
+
+      const startWatching = () => {
+          // DEMO MODE - Simulate movement
+          if (user.id === 'demo-user') {
+              let baseLat = 12.9716;
+              let baseLng = 77.5946;
+              setUserLocation({ lat: baseLat, lng: baseLng });
+              
+              // Move slightly every 3 seconds to show "Live" effect
+              demoInterval = setInterval(() => {
+                  baseLat += (Math.random() - 0.5) * 0.0002;
+                  baseLng += (Math.random() - 0.5) * 0.0002;
+                  setUserLocation({ lat: baseLat, lng: baseLng });
+              }, 3000);
+              return;
           }
+
+          // REAL USER - Live GPS
+          if (!navigator.geolocation) {
+              console.warn("Geolocation not supported");
+              return;
+          }
+
+          watchId = navigator.geolocation.watchPosition(
+              (pos) => {
+                  setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+              },
+              (err) => {
+                  console.warn("GPS Watch Error:", err);
+                  // Fallback if watch fails
+              },
+              { enableHighAccuracy: true, timeout: 20000, maximumAge: 1000 }
+          );
       };
-      initLocation();
-  }, []); // Run once on mount
+
+      startWatching();
+
+      return () => {
+          if (watchId) navigator.geolocation.clearWatch(watchId);
+          if (demoInterval) clearInterval(demoInterval);
+      };
+  }, [user.id]);
 
   // 1. Fetch Store Profile
   useEffect(() => {
