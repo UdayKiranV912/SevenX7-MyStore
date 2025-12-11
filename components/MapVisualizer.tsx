@@ -33,6 +33,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const userMarkerRef = useRef<any>(null);
+  const accuracyCircleRef = useRef<any>(null); // NEW: Accuracy Circle
   const routeLineRef = useRef<any>(null);
   const clickHandlerRef = useRef<any>(null);
   
@@ -184,7 +185,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
          if (mapContainerRef.current) mapContainerRef.current.style.cursor = 'grab';
     }
 
-    // User Marker
+    // User Marker and Accuracy Circle
     if (userLat && userLng) {
         if (!userMarkerRef.current) {
              userMarkerRef.current = L.marker([userLat, userLng], {
@@ -198,14 +199,31 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
                     iconAnchor: [8, 8]
                 })
              }).addTo(mapInstanceRef.current);
+
+             // Add pulsating accuracy circle (simulated radius ~50m)
+             accuracyCircleRef.current = L.circle([userLat, userLng], {
+                 radius: 50,
+                 color: '#3b82f6',
+                 fillColor: '#3b82f6',
+                 fillOpacity: 0.1,
+                 weight: 0
+             }).addTo(mapInstanceRef.current);
+
         } else {
             userMarkerRef.current.setLatLng([userLat, userLng]);
             userMarkerRef.current.setOpacity(1);
+            
+            if (accuracyCircleRef.current) {
+                accuracyCircleRef.current.setLatLng([userLat, userLng]);
+            }
         }
     } else {
         if (userMarkerRef.current) {
-            // Instead of removing, just hide, to avoid flicker
             userMarkerRef.current.setOpacity(0);
+        }
+        if (accuracyCircleRef.current) {
+             mapInstanceRef.current.removeLayer(accuracyCircleRef.current);
+             accuracyCircleRef.current = null;
         }
     }
 

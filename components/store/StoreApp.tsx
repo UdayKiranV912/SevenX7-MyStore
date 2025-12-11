@@ -36,7 +36,7 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
   const totalRevenue = orders.reduce((sum, o) => sum + o.total, 0);
   const pendingOrders = orders.filter(o => o.status === 'Placed' || o.status === 'Accepted' || o.status === 'Preparing').length;
 
-  // Helper: One-time GPS Fetch (for buttons)
+  // Helper: Aggressive GPS Fetch (for buttons)
   const fetchGpsLocation = async (): Promise<{lat: number, lng: number}> => {
       return new Promise((resolve, reject) => {
           if (!navigator.geolocation) {
@@ -49,7 +49,11 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
                   if (user.id === 'demo-user') return resolve({ lat: 12.9716, lng: 77.5946 });
                   reject(err);
               },
-              { enableHighAccuracy: true, timeout: 10000 }
+              { 
+                  enableHighAccuracy: true, 
+                  timeout: 10000,
+                  maximumAge: 0 // Force fresh location, do not use cache
+              }
           );
       });
   };
@@ -83,13 +87,17 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
 
           watchId = navigator.geolocation.watchPosition(
               (pos) => {
+                  // Instant update to state
                   setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
               },
               (err) => {
                   console.warn("GPS Watch Error:", err);
-                  // Fallback if watch fails
               },
-              { enableHighAccuracy: true, timeout: 20000, maximumAge: 1000 }
+              { 
+                  enableHighAccuracy: true, 
+                  timeout: 20000, 
+                  maximumAge: 0 // Force fresh
+              }
           );
       };
 
@@ -497,124 +505,120 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
             </div>
         )}
 
-        {/* INVENTORY TAB */}
+        {/* INVENTORY TAB - RESTRUCTURED FOR MOBILE UI */}
         {activeTab === 'INVENTORY' && (
-            <div className="animate-fade-in">
+            <div className="animate-fade-in pb-16">
                 {!showAddProduct ? (
-                    // MAIN INVENTORY LIST
                     <div className="space-y-4">
-                        <div className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-                            <div>
-                                <h2 className="font-black text-slate-800 text-lg">My Inventory</h2>
-                                <p className="text-xs text-slate-400 font-bold">{managedInventory.length} items listed</p>
+                        {/* Improved Header */}
+                        <div className="sticky top-[72px] z-20 bg-slate-50 pt-2 pb-2 -mx-4 px-4">
+                             <div className="flex justify-between items-center bg-white p-4 rounded-3xl shadow-soft border border-slate-100">
+                                <div>
+                                    <h2 className="font-black text-slate-900 text-lg">Inventory</h2>
+                                    <p className="text-xs text-slate-400 font-bold">{managedInventory.length} Active Items</p>
+                                </div>
+                                <button 
+                                  onClick={() => { setSearchTerm(''); setShowAddProduct(true); }}
+                                  className="bg-slate-900 text-white pl-4 pr-5 py-3 rounded-2xl flex items-center justify-center shadow-lg hover:bg-black transition-all active:scale-95 gap-2"
+                                  title="Add Item"
+                                >
+                                  <span className="text-xl font-light leading-none">+</span>
+                                  <span className="text-xs font-bold">ADD NEW</span>
+                                </button>
                             </div>
-                            <button 
-                              onClick={() => { setSearchTerm(''); setShowAddProduct(true); }}
-                              className="bg-slate-900 text-white w-10 h-10 rounded-xl flex items-center justify-center shadow-lg hover:bg-black transition-transform active:scale-95"
-                              title="Add Item"
-                            >
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-                              </svg>
-                            </button>
                         </div>
                         
-                        <div className="space-y-3 pb-24">
+                        <div className="space-y-4">
                             {managedInventory.length === 0 ? (
-                                <div className="text-center py-10 bg-white rounded-2xl border border-dashed border-slate-200">
-                                    <p className="text-slate-400 font-bold mb-2">No items in store</p>
-                                    <button onClick={() => setShowAddProduct(true)} className="text-brand-DEFAULT font-black text-sm uppercase px-4 py-2 hover:bg-slate-50 rounded-lg transition-colors">Add Items Now</button>
+                                <div className="text-center py-16 bg-white rounded-[2rem] border border-dashed border-slate-200 mx-2">
+                                    <div className="text-4xl mb-3 opacity-30">📦</div>
+                                    <p className="text-slate-400 font-bold mb-4 text-sm">Your shelf is empty!</p>
+                                    <button onClick={() => setShowAddProduct(true)} className="text-brand-DEFAULT font-black text-xs uppercase px-4 py-2 bg-brand-light rounded-xl hover:bg-brand-light/70 transition-colors">Start Adding Products</button>
                                 </div>
                             ) : (
                                 managedInventory.map((item) => (
-                                    <div key={item.id} className={`bg-white p-4 rounded-2xl shadow-sm border transition-colors ${item.inStock ? 'border-l-4 border-l-emerald-500 border-slate-100' : 'border-slate-100 bg-slate-50/50'}`}>
-                                        <div className="flex items-start gap-3">
-                                            <div className="text-3xl bg-slate-50 w-12 h-12 flex items-center justify-center rounded-xl relative">
+                                    <div key={item.id} className={`bg-white rounded-[1.8rem] shadow-sm border overflow-hidden transition-all ${item.inStock ? 'border-slate-100 shadow-card' : 'border-slate-100 opacity-80 grayscale-[0.5]'}`}>
+                                        
+                                        {/* Card Header Section */}
+                                        <div className="p-4 flex items-start gap-4">
+                                            <div className="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center text-3xl shadow-inner border border-slate-100 shrink-0">
                                                 {item.emoji}
-                                                {!item.inStock && (
-                                                    <div className="absolute inset-0 bg-white/60 rounded-xl backdrop-blur-[1px] flex items-center justify-center">
-                                                        <span className="text-xs">🚫</span>
-                                                    </div>
-                                                )}
                                             </div>
-                                            <div className="flex-1">
+                                            <div className="flex-1 min-w-0 pt-1">
                                                 <div className="flex justify-between items-start">
                                                     <div>
-                                                        <h3 className={`font-bold ${item.inStock ? 'text-slate-800' : 'text-slate-500 line-through decoration-slate-300'}`}>{item.name}</h3>
-                                                        <p className="text-xs text-slate-400">{item.category}</p>
-                                                    </div>
-                                                    <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${item.inStock ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-200 text-slate-500'}`}>
-                                                        {item.inStock ? 'Online' : 'Offline'}
-                                                    </div>
-                                                </div>
-                                                
-                                                <div className="mt-3 flex items-end justify-between gap-2 flex-wrap">
-                                                    <div className="flex items-center gap-2">
-                                                        {/* Offer Price */}
-                                                        <div className="flex flex-col">
-                                                            <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 mb-0.5">Offer</label>
-                                                            <div className="flex items-center gap-1 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-100 focus-within:border-brand-DEFAULT transition-colors">
-                                                                <span className="text-xs font-bold text-slate-400">₹</span>
-                                                                <input 
-                                                                    type="number" 
-                                                                    value={item.storePrice} 
-                                                                    onChange={(e) => handleInventoryUpdate(item, parseFloat(e.target.value) || 0, item.inStock, item.stock, item.mrp)}
-                                                                    className="w-24 bg-transparent font-bold text-slate-800 outline-none text-sm"
-                                                                    title="Offer Price"
-                                                                />
-                                                            </div>
-                                                        </div>
-
-                                                        {/* MRP */}
-                                                        <div className="flex flex-col">
-                                                            <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 mb-0.5">MRP</label>
-                                                            <div className="flex items-center gap-1 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-100 focus-within:border-brand-DEFAULT transition-colors">
-                                                                <span className="text-xs font-bold text-slate-400">₹</span>
-                                                                <input 
-                                                                    type="number" 
-                                                                    value={item.mrp || item.price} 
-                                                                    onChange={(e) => handleInventoryUpdate(item, item.storePrice, item.inStock, item.stock, parseFloat(e.target.value) || 0)}
-                                                                    className="w-24 bg-transparent font-bold text-slate-500 outline-none text-sm"
-                                                                    title="MRP"
-                                                                />
-                                                            </div>
-                                                        </div>
-
-                                                        {/* Stock */}
-                                                        <div className="flex flex-col">
-                                                            <label className="text-[9px] font-bold text-slate-400 uppercase ml-1 mb-0.5">Qty</label>
-                                                            <div className="flex items-center gap-1 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-100 focus-within:border-brand-DEFAULT transition-colors">
-                                                                <input 
-                                                                    type="number" 
-                                                                    value={item.stock} 
-                                                                    onChange={(e) => handleInventoryUpdate(item, item.storePrice, item.inStock, parseInt(e.target.value) || 0, item.mrp)}
-                                                                    className="w-20 bg-transparent font-bold text-slate-800 outline-none text-sm text-center"
-                                                                    title="Stock Quantity"
-                                                                />
-                                                            </div>
-                                                        </div>
+                                                        <h3 className="font-black text-slate-800 text-base truncate pr-2">{item.name}</h3>
+                                                        <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-0.5 rounded-md uppercase tracking-wide inline-block mt-1">{item.category}</span>
                                                     </div>
                                                     
-                                                    <div className="flex items-center gap-3">
-                                                        <button 
-                                                            onClick={() => handleInventoryUpdate(item, item.storePrice, !item.inStock, item.stock, item.mrp)}
-                                                            className={`relative w-11 h-6 rounded-full transition-colors flex items-center ${item.inStock ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                                                            title={item.inStock ? "Mark Out of Stock" : "Mark In Stock"}
-                                                        >
-                                                            <div className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform duration-200 ml-0.5 ${item.inStock ? 'translate-x-5' : 'translate-x-0'}`}></div>
-                                                        </button>
-                                                        
-                                                        <button 
-                                                            onClick={() => handleDeleteItem(item)}
-                                                            className="w-8 h-8 flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
-                                                            title="Delete from list"
-                                                        >
-                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                            </svg>
-                                                        </button>
+                                                    {/* Status Toggle - Large for Touch */}
+                                                    <button 
+                                                        onClick={() => handleInventoryUpdate(item, item.storePrice, !item.inStock, item.stock, item.mrp)}
+                                                        className={`relative h-8 w-14 rounded-full transition-all duration-300 flex items-center shadow-inner ${item.inStock ? 'bg-emerald-500' : 'bg-slate-200'}`}
+                                                    >
+                                                        <div className={`w-6 h-6 bg-white rounded-full shadow-md transform transition-transform duration-300 ml-1 ${item.inStock ? 'translate-x-6' : 'translate-x-0'}`}></div>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Edit Inputs Section - Grouped with background */}
+                                        <div className="px-4 pb-4">
+                                            <div className="bg-slate-50 rounded-2xl p-3 grid grid-cols-3 gap-3 border border-slate-100/50">
+                                                {/* Price Input */}
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="text-[9px] font-bold text-slate-400 uppercase pl-1">Your Price</label>
+                                                    <div className="relative">
+                                                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">₹</span>
+                                                        <input 
+                                                            type="number" 
+                                                            value={item.storePrice} 
+                                                            onChange={(e) => handleInventoryUpdate(item, parseFloat(e.target.value) || 0, item.inStock, item.stock, item.mrp)}
+                                                            className="w-full pl-5 pr-2 py-2.5 bg-white rounded-xl text-sm font-bold text-slate-800 outline-none border border-slate-200 focus:border-brand-DEFAULT focus:ring-2 focus:ring-brand-light transition-all"
+                                                        />
                                                     </div>
                                                 </div>
+
+                                                {/* MRP Input */}
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="text-[9px] font-bold text-slate-400 uppercase pl-1">MRP</label>
+                                                    <div className="relative">
+                                                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">₹</span>
+                                                        <input 
+                                                            type="number" 
+                                                            value={item.mrp || item.price} 
+                                                            onChange={(e) => handleInventoryUpdate(item, item.storePrice, item.inStock, item.stock, parseFloat(e.target.value) || 0)}
+                                                            className="w-full pl-5 pr-2 py-2.5 bg-white rounded-xl text-sm font-bold text-slate-500 outline-none border border-slate-200 focus:border-brand-DEFAULT focus:ring-2 focus:ring-brand-light transition-all"
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                {/* Qty Input */}
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="text-[9px] font-bold text-slate-400 uppercase pl-1">Stock Qty</label>
+                                                    <input 
+                                                        type="number" 
+                                                        value={item.stock} 
+                                                        onChange={(e) => handleInventoryUpdate(item, item.storePrice, item.inStock, parseInt(e.target.value) || 0, item.mrp)}
+                                                        className="w-full py-2.5 bg-white rounded-xl text-sm font-bold text-center text-slate-800 outline-none border border-slate-200 focus:border-brand-DEFAULT focus:ring-2 focus:ring-brand-light transition-all"
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            {/* Footer Actions */}
+                                            <div className="flex justify-between items-center mt-3 pl-2">
+                                                <span className={`text-[10px] font-black uppercase tracking-wider ${item.inStock ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                                    {item.inStock ? '● Live Online' : '○ Currently Offline'}
+                                                </span>
+                                                <button 
+                                                    onClick={() => handleDeleteItem(item)}
+                                                    className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                                                    title="Remove Item"
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                                                    </svg>
+                                                </button>
                                             </div>
                                         </div>
                                     </div>
@@ -623,28 +627,32 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
                         </div>
                     </div>
                 ) : (
-                    // CATALOG ADD VIEW
-                    <div className="space-y-4 animate-slide-up">
-                        <div className="flex items-center gap-3 bg-white p-2 rounded-2xl shadow-sm border border-slate-100">
-                            <button onClick={() => { setShowAddProduct(false); setSearchTerm(''); }} className="w-10 h-10 bg-slate-50 rounded-xl flex items-center justify-center shadow-sm text-slate-500 hover:bg-slate-100">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    // CATALOG ADD VIEW - REFRESHED UI
+                    <div className="space-y-4 animate-slide-up bg-white min-h-[80vh] rounded-t-[2.5rem] shadow-soft-xl p-5 -mx-4 -mt-4 relative z-50">
+                        <div className="flex items-center gap-3 mb-6">
+                            <button onClick={() => { setShowAddProduct(false); setSearchTerm(''); }} className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-200 transition-colors">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
                                 </svg>
                             </button>
-                            <div className="flex-1 flex items-center px-2">
-                                <span className="text-slate-400 mr-2">🔍</span>
+                            <h2 className="text-xl font-black text-slate-900">Add Products</h2>
+                        </div>
+
+                        <div className="sticky top-0 bg-white z-10 pb-4">
+                            <div className="relative">
+                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
                                 <input 
                                     value={searchTerm}
                                     onChange={(e) => setSearchTerm(e.target.value)}
-                                    placeholder="Search catalog..."
-                                    className="w-full p-2 outline-none font-bold text-slate-700 bg-transparent text-sm"
+                                    placeholder="Search global catalog..."
+                                    className="w-full bg-slate-50 border-none rounded-2xl py-4 pl-12 pr-4 font-bold text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-brand-DEFAULT outline-none transition-all"
                                     autoFocus
                                 />
                             </div>
                         </div>
 
-                        <div className="space-y-2 pb-24">
-                            <h3 className="text-xs font-black text-slate-400 uppercase px-2">Available Products</h3>
+                        <div className="space-y-3 pb-24">
+                            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest pl-1 mb-2">Available to Add</h3>
                             {catalogItems.length === 0 ? (
                                 <div className="text-center py-10 text-slate-400">
                                     {searchTerm ? 'No matching items found' : 'Start typing to search...'}
@@ -656,64 +664,62 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
                                     const displayStock = draftStocks[item.id] !== undefined ? draftStocks[item.id] : 10;
                                     
                                     return (
-                                        <div key={item.id} className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-3 transition-all hover:border-slate-200">
-                                            <div className="flex items-center gap-3">
-                                                <div className="text-2xl w-10 h-10 bg-slate-50 rounded-lg flex items-center justify-center">{item.emoji}</div>
+                                        <div key={item.id} className="bg-white p-4 rounded-[1.5rem] shadow-card border border-slate-50 flex flex-col gap-3 transition-all">
+                                            <div className="flex items-center gap-4">
+                                                <div className="text-3xl w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center shadow-inner border border-slate-100">{item.emoji}</div>
                                                 <div>
-                                                    <div className="font-bold text-slate-800 text-sm">{item.name}</div>
-                                                    <div className="text-[10px] text-slate-400 font-bold">{item.category}</div>
+                                                    <div className="font-black text-slate-800 text-base">{item.name}</div>
+                                                    <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wide">{item.category}</div>
                                                 </div>
                                             </div>
                                             
-                                            <div className="flex items-center justify-between gap-2 border-t border-slate-50 pt-2">
-                                                <div className="flex gap-2">
-                                                    <div className="flex items-center bg-slate-50 rounded-lg px-2 py-1.5 border border-slate-100 focus-within:border-brand-DEFAULT transition-colors">
-                                                        <span className="text-[9px] font-bold text-slate-400 mr-1">OFFER</span>
-                                                        <input 
-                                                            type="number"
-                                                            value={displayPrice}
-                                                            onChange={(e) => {
-                                                                const val = parseFloat(e.target.value);
-                                                                setDraftPrices(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
-                                                            }}
-                                                            className="w-16 sm:w-20 bg-transparent text-sm font-bold text-slate-800 outline-none p-0"
-                                                            placeholder="Price"
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center bg-slate-50 rounded-lg px-2 py-1.5 border border-slate-100 focus-within:border-brand-DEFAULT transition-colors">
-                                                        <span className="text-[9px] font-bold text-slate-400 mr-1">MRP</span>
-                                                        <input 
-                                                            type="number"
-                                                            value={displayMrp}
-                                                            onChange={(e) => {
-                                                                const val = parseFloat(e.target.value);
-                                                                setDraftMrps(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
-                                                            }}
-                                                            className="w-16 sm:w-20 bg-transparent text-sm font-bold text-slate-500 outline-none p-0"
-                                                            placeholder="MRP"
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center bg-slate-50 rounded-lg px-2 py-1.5 border border-slate-100 focus-within:border-brand-DEFAULT transition-colors">
-                                                        <span className="text-[9px] font-bold text-slate-400 mr-1 uppercase">Qty</span>
-                                                        <input 
-                                                            type="number"
-                                                            value={displayStock}
-                                                            onChange={(e) => {
-                                                                const val = parseInt(e.target.value);
-                                                                setDraftStocks(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
-                                                            }}
-                                                            className="w-12 bg-transparent text-sm font-bold text-slate-800 outline-none p-0"
-                                                            placeholder="Qty"
-                                                        />
-                                                    </div>
+                                            {/* Quick Config Row */}
+                                            <div className="bg-slate-50 rounded-xl p-2 flex gap-2 overflow-x-auto hide-scrollbar">
+                                                <div className="flex-1 min-w-[70px]">
+                                                    <label className="text-[8px] font-bold text-slate-400 uppercase block pl-1">Price</label>
+                                                    <input 
+                                                        type="number"
+                                                        value={displayPrice}
+                                                        onChange={(e) => {
+                                                            const val = parseFloat(e.target.value);
+                                                            setDraftPrices(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
+                                                        }}
+                                                        className="w-full bg-white rounded-lg px-2 py-1.5 text-xs font-bold text-slate-800 border border-slate-200 outline-none focus:border-brand-DEFAULT"
+                                                    />
                                                 </div>
-                                                <button 
-                                                    onClick={() => handleInventoryUpdate(item, displayPrice, true, displayStock, displayMrp)}
-                                                    className="bg-slate-900 text-white px-3 py-2 rounded-xl text-xs font-bold shadow-md hover:bg-emerald-600 active:scale-95 transition-all flex items-center gap-1"
-                                                >
-                                                    Add <span className="text-sm font-light">+</span>
-                                                </button>
+                                                <div className="flex-1 min-w-[70px]">
+                                                    <label className="text-[8px] font-bold text-slate-400 uppercase block pl-1">MRP</label>
+                                                    <input 
+                                                        type="number"
+                                                        value={displayMrp}
+                                                        onChange={(e) => {
+                                                            const val = parseFloat(e.target.value);
+                                                            setDraftMrps(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
+                                                        }}
+                                                        className="w-full bg-white rounded-lg px-2 py-1.5 text-xs font-bold text-slate-500 border border-slate-200 outline-none focus:border-brand-DEFAULT"
+                                                    />
+                                                </div>
+                                                <div className="flex-1 min-w-[60px]">
+                                                    <label className="text-[8px] font-bold text-slate-400 uppercase block pl-1">Qty</label>
+                                                    <input 
+                                                        type="number"
+                                                        value={displayStock}
+                                                        onChange={(e) => {
+                                                            const val = parseInt(e.target.value);
+                                                            setDraftStocks(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
+                                                        }}
+                                                        className="w-full bg-white rounded-lg px-2 py-1.5 text-xs font-bold text-slate-800 border border-slate-200 outline-none focus:border-brand-DEFAULT text-center"
+                                                    />
+                                                </div>
                                             </div>
+
+                                            <button 
+                                                onClick={() => handleInventoryUpdate(item, displayPrice, true, displayStock, displayMrp)}
+                                                className="w-full bg-slate-900 text-white py-3 rounded-xl text-sm font-black shadow-lg hover:bg-emerald-600 active:scale-95 transition-all flex justify-center items-center gap-2"
+                                            >
+                                                <span>ADD TO STORE</span>
+                                                <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px]">+</span>
+                                            </button>
                                         </div>
                                     );
                                 })
