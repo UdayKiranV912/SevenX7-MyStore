@@ -1,7 +1,6 @@
 
-
 import { supabase } from './supabaseClient';
-import { Store, Order, InventoryItem } from '../types';
+import { Store, Order, InventoryItem, BrandInventoryInfo } from '../types';
 import { INITIAL_PRODUCTS } from '../constants';
 
 // 1. Fetch Store Details for the logged-in Owner
@@ -81,7 +80,8 @@ export const getStoreInventory = async (storeId: string): Promise<InventoryItem[
             inStock: false,
             stock: 0,
             storePrice: catalogItem.price,
-            isActive: false
+            isActive: false,
+            brandDetails: {}
         }));
     }
 
@@ -94,18 +94,33 @@ export const getStoreInventory = async (storeId: string): Promise<InventoryItem[
         inStock: dbItem ? dbItem.in_stock : false,
         stock: dbItem ? (dbItem.stock || 0) : 0,
         storePrice: dbItem ? dbItem.price : catalogItem.price, // Use store price or default MRP
-        isActive: !!dbItem // If record exists, it's "Active" in management list
+        isActive: !!dbItem, // If record exists, it's "Active" in management list
+        brandDetails: dbItem?.brand_data || {} // Load saved brand details
       };
     });
   } catch (e) {
       console.error("getStoreInventory Exception:", e);
       // Return default catalog on crash
-      return INITIAL_PRODUCTS.map(c => ({...c, inStock: false, stock: 0, storePrice: c.price, isActive: false}));
+      return INITIAL_PRODUCTS.map(c => ({
+          ...c, 
+          inStock: false, 
+          stock: 0, 
+          storePrice: c.price, 
+          isActive: false, 
+          brandDetails: {}
+      }));
   }
 };
 
-// 3. Update Inventory (Price, Stock, InStock)
-export const updateInventoryItem = async (storeId: string, productId: string, price: number, inStock: boolean, stock: number) => {
+// 3. Update Inventory (Price, Stock, InStock, BrandDetails)
+export const updateInventoryItem = async (
+    storeId: string, 
+    productId: string, 
+    price: number, 
+    inStock: boolean, 
+    stock: number,
+    brandDetails?: Record<string, BrandInventoryInfo>
+) => {
   const { error } = await supabase
     .from('inventory')
     .upsert({
@@ -113,7 +128,8 @@ export const updateInventoryItem = async (storeId: string, productId: string, pr
       product_id: productId,
       price: price,
       in_stock: inStock,
-      stock: stock
+      stock: stock,
+      brand_data: brandDetails // Save granular brand info to JSONB column
     }, { onConflict: 'store_id, product_id' });
 
   if (error) throw error;

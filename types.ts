@@ -1,8 +1,14 @@
 
-
 export interface BrandOption {
   name: string;
-  price: number; // Override base price
+  price: number; // Override base price (Catalog MRP/Base)
+}
+
+export interface BrandInventoryInfo {
+  price: number; // Store Selling Price
+  mrp: number;   // Store MRP
+  stock: number; // Brand specific stock
+  inStock: boolean;
 }
 
 export interface Product {
@@ -35,9 +41,10 @@ export interface Store {
 
 export interface InventoryItem extends Product {
   inStock: boolean;
-  stock: number; // Quantity available
-  storePrice: number; // The price set by the store owner
+  stock: number; // Quantity available (Total)
+  storePrice: number; // The price set by the store owner (Base/Starting)
   isActive: boolean; // Is it listed in the store?
+  brandDetails?: Record<string, BrandInventoryInfo>; // NEW: Granular brand control
 }
 
 export interface CartItem extends Product {

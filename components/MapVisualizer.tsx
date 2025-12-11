@@ -33,7 +33,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const userMarkerRef = useRef<any>(null);
-  const accuracyCircleRef = useRef<any>(null); // NEW: Accuracy Circle
+  const accuracyCircleRef = useRef<any>(null);
   const routeLineRef = useRef<any>(null);
   const clickHandlerRef = useRef<any>(null);
   
@@ -70,35 +70,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     }
   });
 
-  // View Update Logic - Intelligent FlyTo
-  useEffect(() => {
-      if (!mapInstanceRef.current) return;
-      
-      const storeChanged = selectedStore?.lat !== prevStoreLat.current || selectedStore?.lng !== prevStoreLng.current;
-      const userChanged = userLat !== prevUserLat.current || userLng !== prevUserLng.current;
-      
-      // Update refs for next render
-      prevStoreLat.current = selectedStore?.lat;
-      prevStoreLng.current = selectedStore?.lng;
-      prevUserLat.current = userLat;
-      prevUserLng.current = userLng;
-
-      // Logic:
-      // 1. If we are manually pinning (onMapClick), don't auto-move unless it's the very first load or store changed (which happens when pin moves).
-      // 2. If Store Changed, fly to Store.
-      // 3. If User Changed, fly to User.
-      
-      if (storeChanged && selectedStore) {
-          mapInstanceRef.current.flyTo([selectedStore.lat, selectedStore.lng], 16, { duration: 1 });
-      } else if (userChanged && userLat && userLng) {
-          mapInstanceRef.current.flyTo([userLat, userLng], 16, { duration: 1 });
-      } else if (!selectedStore && userLat && userLng && !prevUserLat.current) {
-          // Initial user load with no store
-          mapInstanceRef.current.setView([userLat, userLng], 16);
-      }
-
-  }, [selectedStore?.lat, selectedStore?.lng, userLat, userLng]);
-
+  // Helper Distance Calc
   const calculateDist = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     const R = 6371; 
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -110,6 +82,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     return (R * c).toFixed(1) + ' km';
   };
 
+  // Distance Update
   useEffect(() => {
       const lat = userLat;
       const lng = userLng;
@@ -122,36 +95,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
       }
   }, [userLat, userLng, selectedStore]);
 
-  const handleLocateMe = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.nativeEvent) e.nativeEvent.stopImmediatePropagation();
-
-    setIsLocating(true);
-
-    if (mapInstanceRef.current && userLat && userLng) {
-        mapInstanceRef.current.flyTo([userLat, userLng], 16, { duration: 1.5 });
-        setTimeout(() => setIsLocating(false), 500);
-    } else if (onRequestLocation) {
-        onRequestLocation();
-        // Fallback timeout
-        setTimeout(() => setIsLocating(false), 8000);
-    } else {
-        setIsLocating(false);
-    }
-  };
-
-  const openGoogleMaps = (e?: React.MouseEvent) => {
-    if (e) {
-        e.stopPropagation();
-        e.preventDefault();
-    }
-    if (selectedStore) {
-        const url = `https://www.google.com/maps/dir/?api=1&destination=${selectedStore.lat},${selectedStore.lng}`;
-        window.open(url, '_blank');
-    }
-  };
-
+  // 1. Initialize Map Instance
   useEffect(() => {
     const L = (window as any).L;
     if (!L || !mapContainerRef.current) return;
@@ -168,9 +112,14 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
         maxZoom: 19,
         attribution: ''
       }).addTo(mapInstanceRef.current);
-    } 
+    }
+  }, []); // Run once
 
-    if (onMapClick) {
+  // 2. Handle Click / Editing Mode
+  useEffect(() => {
+      if (!mapInstanceRef.current) return;
+      
+      if (onMapClick) {
         if (clickHandlerRef.current) {
             mapInstanceRef.current.off('click', clickHandlerRef.current);
         }
@@ -182,144 +131,212 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
         mapInstanceRef.current.on('click', clickHandlerRef.current);
         if (mapContainerRef.current) mapContainerRef.current.style.cursor = 'crosshair';
     } else {
+         if (clickHandlerRef.current) {
+             mapInstanceRef.current.off('click', clickHandlerRef.current);
+             clickHandlerRef.current = null;
+         }
          if (mapContainerRef.current) mapContainerRef.current.style.cursor = 'grab';
     }
+  }, [onMapClick]);
 
-    // User Marker and Accuracy Circle
-    if (userLat && userLng) {
-        if (!userMarkerRef.current) {
-             userMarkerRef.current = L.marker([userLat, userLng], {
-                icon: L.divIcon({
-                    className: 'user-pin-live',
-                    html: `<div class="relative">
-                                <div class="w-4 h-4 bg-blue-500 rounded-full border-2 border-white shadow-md z-20 relative"></div>
-                                <div class="absolute -top-4 -left-4 w-12 h-12 bg-blue-500/30 rounded-full animate-ping z-10"></div>
-                            </div>`,
-                    iconSize: [16, 16],
-                    iconAnchor: [8, 8]
-                })
-             }).addTo(mapInstanceRef.current);
+  // 3. User Marker Logic (Dedicated Effect for Stability)
+  useEffect(() => {
+      const L = (window as any).L;
+      if (!mapInstanceRef.current || !L) return;
 
-             // Add pulsating accuracy circle (simulated radius ~50m)
-             accuracyCircleRef.current = L.circle([userLat, userLng], {
-                 radius: 50,
-                 color: '#3b82f6',
-                 fillColor: '#3b82f6',
-                 fillOpacity: 0.1,
-                 weight: 0
-             }).addTo(mapInstanceRef.current);
-
-        } else {
-            userMarkerRef.current.setLatLng([userLat, userLng]);
-            userMarkerRef.current.setOpacity(1);
-            
-            if (accuracyCircleRef.current) {
-                accuracyCircleRef.current.setLatLng([userLat, userLng]);
-            }
-        }
-    } else {
-        if (userMarkerRef.current) {
-            userMarkerRef.current.setOpacity(0);
-        }
-        if (accuracyCircleRef.current) {
-             mapInstanceRef.current.removeLayer(accuracyCircleRef.current);
-             accuracyCircleRef.current = null;
-        }
-    }
-
-    // Store Markers
-    markersRef.current.forEach(m => mapInstanceRef.current.removeLayer(m));
-    markersRef.current = [];
-
-    const createIcon = (type: Store['type'], isSelected: boolean) => {
-       let color = '#ef4444'; 
-       let emoji = '🏪';
-       let borderColor = isSelected ? '#000' : '#fff';
-       
-       if (type === 'produce') {
-         color = '#22c55e';
-         emoji = '🥦';
-       } else if (type === 'dairy') {
-         color = '#3b82f6';
-         emoji = '🥛';
-       }
-
-       return L.divIcon({
-          className: 'custom-pin',
-          html: `<div style="
-            background-color: ${color};
-            width: ${isSelected ? 40 : 30}px;
-            height: ${isSelected ? 40 : 30}px;
-            border-radius: 50%;
-            border: ${isSelected ? '3px' : '2px'} solid ${borderColor};
-            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-            display: flex; 
-            align-items: center; 
-            justify-content: center;
-            font-size: ${isSelected ? 22 : 16}px;
-            z-index: ${isSelected ? 100 : 1};
-            transition: all 0.2s;
-            cursor: pointer;
-            position: relative;
-          ">
-            ${emoji}
-            ${isSelected && onMapClick ? '<div style="position:absolute; bottom:-8px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid #000;"></div>' : ''}
-          </div>`,
-          iconSize: [isSelected ? 40 : 30, isSelected ? 40 : 30],
-          iconAnchor: [isSelected ? 20 : 15, isSelected ? 20 : 15] 
-       });
-    };
-
-    stores.forEach(store => {
-      const isSelected = selectedStore?.id === store.id;
-      const marker = L.marker([store.lat, store.lng], {
-        icon: createIcon(store.type, isSelected),
-        zIndexOffset: isSelected ? 1000 : 0
-      }).addTo(mapInstanceRef.current);
-
-      marker.on('click', () => {
-          onSelectStore(store);
-          if (mode === 'PICKUP' && isSelected && enableExternalNavigation) {
-              openGoogleMaps();
+      if (userLat && userLng) {
+          if (!userMarkerRef.current) {
+               // Create User Marker
+               userMarkerRef.current = L.marker([userLat, userLng], {
+                  zIndexOffset: 1000, // Ensure it's on top
+                  icon: L.divIcon({
+                      className: 'bg-transparent border-none', // Crucial for clean look
+                      html: `<div class="relative flex items-center justify-center w-8 h-8 -ml-2 -mt-2">
+                                  <div class="w-4 h-4 bg-blue-500 rounded-full border-2 border-white shadow-md z-20 relative"></div>
+                                  <div class="absolute inset-0 bg-blue-500/30 rounded-full animate-ping z-10"></div>
+                              </div>`,
+                      iconSize: [32, 32],
+                      iconAnchor: [16, 16] // Center the anchor
+                  })
+               }).addTo(mapInstanceRef.current);
+  
+               // Create Accuracy Circle
+               accuracyCircleRef.current = L.circle([userLat, userLng], {
+                   radius: 100, // Visual radius
+                   color: '#3b82f6',
+                   fillColor: '#3b82f6',
+                   fillOpacity: 0.08,
+                   weight: 1,
+                   dashArray: '4, 4'
+               }).addTo(mapInstanceRef.current);
+  
+          } else {
+              // Update positions
+              userMarkerRef.current.setLatLng([userLat, userLng]);
+              userMarkerRef.current.setOpacity(1);
+              
+              if (accuracyCircleRef.current) {
+                  accuracyCircleRef.current.setLatLng([userLat, userLng]);
+              }
           }
-      });
-      markersRef.current.push(marker);
-    });
+      } else {
+          // Hide if no location
+          if (userMarkerRef.current) userMarkerRef.current.setOpacity(0);
+          if (accuracyCircleRef.current) mapInstanceRef.current.removeLayer(accuracyCircleRef.current);
+          accuracyCircleRef.current = null;
+      }
+  }, [userLat, userLng]);
 
-    if (routeLineRef.current) {
-        mapInstanceRef.current.removeLayer(routeLineRef.current);
-        routeLineRef.current = null;
-    }
+  // 4. Store Markers Logic
+  useEffect(() => {
+      const L = (window as any).L;
+      if (!mapInstanceRef.current || !L) return;
 
-    if (selectedStore && showRoute && userLat && userLng) {
-        const latlngs = [
-            [userLat, userLng],
-            [selectedStore.lat, selectedStore.lng]
-        ];
-        
-        routeLineRef.current = L.polyline(latlngs, {
-            color: '#059669', 
-            weight: 6,
-            opacity: 0.8,
-            dashArray: '10, 10', 
-            lineCap: 'round',
-            className: mode === 'PICKUP' ? 'cursor-pointer hover:stroke-emerald-700 transition-colors' : ''
+      // Clear existing store markers
+      markersRef.current.forEach(m => mapInstanceRef.current.removeLayer(m));
+      markersRef.current = [];
+
+      const createIcon = (type: Store['type'], isSelected: boolean) => {
+         let color = '#ef4444'; 
+         let emoji = '🏪';
+         let borderColor = isSelected ? '#000' : '#fff';
+         
+         if (type === 'produce') { color = '#22c55e'; emoji = '🥦'; } 
+         else if (type === 'dairy') { color = '#3b82f6'; emoji = '🥛'; }
+  
+         return L.divIcon({
+            className: 'bg-transparent border-none',
+            html: `<div style="
+              background-color: ${color};
+              width: ${isSelected ? 40 : 30}px;
+              height: ${isSelected ? 40 : 30}px;
+              border-radius: 50%;
+              border: ${isSelected ? '3px' : '2px'} solid ${borderColor};
+              box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+              display: flex; 
+              align-items: center; 
+              justify-content: center;
+              font-size: ${isSelected ? 22 : 16}px;
+              z-index: ${isSelected ? 100 : 1};
+              transition: all 0.2s;
+              cursor: pointer;
+              position: relative;
+            ">
+              ${emoji}
+              ${isSelected && onMapClick ? '<div style="position:absolute; bottom:-8px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid #000;"></div>' : ''}
+            </div>`,
+            iconSize: [isSelected ? 40 : 30, isSelected ? 40 : 30],
+            iconAnchor: [isSelected ? 20 : 15, isSelected ? 20 : 15] 
+         });
+      };
+  
+      stores.forEach(store => {
+        const isSelected = selectedStore?.id === store.id;
+        const marker = L.marker([store.lat, store.lng], {
+          icon: createIcon(store.type, isSelected),
+          zIndexOffset: isSelected ? 900 : 0
         }).addTo(mapInstanceRef.current);
+  
+        marker.on('click', () => {
+            onSelectStore(store);
+            if (mode === 'PICKUP' && isSelected && enableExternalNavigation) {
+                openGoogleMaps();
+            }
+        });
+        markersRef.current.push(marker);
+      });
 
-        if (mode === 'PICKUP' && enableExternalNavigation) {
-            routeLineRef.current.on('click', (e: any) => openGoogleMaps(e.originalEvent));
-            routeLineRef.current.bindTooltip("Tap to Navigate", {
-                permanent: true, 
-                direction: 'center', 
-                className: 'bg-white text-brand-dark text-xs font-bold px-2 py-1 rounded-md shadow-md border border-brand-light'
-            });
-        }
-        
-        const bounds = L.latLngBounds(latlngs);
-        mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+  }, [stores, selectedStore, mode, onMapClick]); // Dependencies for markers
+
+  // 5. Route Line Logic
+  useEffect(() => {
+      const L = (window as any).L;
+      if (!mapInstanceRef.current || !L) return;
+
+      if (routeLineRef.current) {
+          mapInstanceRef.current.removeLayer(routeLineRef.current);
+          routeLineRef.current = null;
+      }
+  
+      if (selectedStore && showRoute && userLat && userLng) {
+          const latlngs = [
+              [userLat, userLng],
+              [selectedStore.lat, selectedStore.lng]
+          ];
+          
+          routeLineRef.current = L.polyline(latlngs, {
+              color: '#059669', 
+              weight: 4,
+              opacity: 0.8,
+              dashArray: '8, 8', 
+              lineCap: 'round',
+              className: 'animate-dash' // Assuming custom CSS for dash animation if possible
+          }).addTo(mapInstanceRef.current);
+  
+          if (mode === 'PICKUP' && enableExternalNavigation) {
+              routeLineRef.current.on('click', (e: any) => openGoogleMaps(e.originalEvent));
+          }
+          
+          // Fit bounds to show route
+          const bounds = L.latLngBounds(latlngs);
+          mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 15, animate: true });
+      }
+  }, [selectedStore, showRoute, userLat, userLng, mode]);
+
+  // 6. Intelligent Centering (FlyTo)
+  useEffect(() => {
+      if (!mapInstanceRef.current) return;
+      
+      const storeChanged = selectedStore?.lat !== prevStoreLat.current || selectedStore?.lng !== prevStoreLng.current;
+      const userChanged = userLat !== prevUserLat.current || userLng !== prevUserLng.current;
+      
+      // Update refs
+      prevStoreLat.current = selectedStore?.lat;
+      prevStoreLng.current = selectedStore?.lng;
+      prevUserLat.current = userLat;
+      prevUserLng.current = userLng;
+
+      // Logic:
+      // If manually editing (onMapClick exists), usually we follow the store pin (which moves on click).
+      // If viewing (no onMapClick):
+      // - If "Locate Me" was clicked (isLocating), fly to user.
+      // - If Store was selected, fly to store.
+      
+      if (storeChanged && selectedStore) {
+          // Store location updated
+          mapInstanceRef.current.flyTo([selectedStore.lat, selectedStore.lng], 16, { duration: 0.8 });
+      } else if (isLocating && userLat && userLng) {
+          // Explicit user locate request
+          mapInstanceRef.current.flyTo([userLat, userLng], 16, { duration: 1.5 });
+          setTimeout(() => setIsLocating(false), 2000); // Reset lock after animation
+      } else if (userChanged && userLat && userLng && !selectedStore) {
+          // If no store selected and user moves, follow user (e.g. initial load)
+          mapInstanceRef.current.flyTo([userLat, userLng], 15);
+      }
+
+  }, [selectedStore, userLat, userLng, isLocating]);
+
+
+  const handleLocateMe = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsLocating(true); // Triggers the FlyTo effect
+
+    if (onRequestLocation) {
+        onRequestLocation();
     }
+  };
 
-  }, [stores, userLat, userLng, selectedStore, onSelectStore, mode, showRoute, enableExternalNavigation, mapCenterLat, mapCenterLng, onMapClick]);
+  const openGoogleMaps = (e?: React.MouseEvent) => {
+    if (e) {
+        e.stopPropagation();
+        e.preventDefault();
+    }
+    if (selectedStore) {
+        const url = `https://www.google.com/maps/dir/?api=1&destination=${selectedStore.lat},${selectedStore.lng}`;
+        window.open(url, '_blank');
+    }
+  };
 
   return (
     <div className={`w-full bg-slate-100 rounded-[2.5rem] overflow-hidden relative shadow-inner border border-white ${className}`}>
