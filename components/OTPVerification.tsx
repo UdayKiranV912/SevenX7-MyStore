@@ -215,16 +215,7 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, onDemoLogin, onCusto
         
         {/* Footer Demo Links */}
         {authMode !== 'VERIFY' && (
-            <div className="bg-slate-50 p-4 text-center border-t border-slate-200 w-full flex justify-around">
-                <button 
-                    type="button" 
-                    onClick={onCustomerDemoLogin}
-                    className="text-[10px] font-bold text-slate-500 hover:text-brand-DEFAULT transition-colors flex flex-col items-center gap-1 group"
-                >
-                    <span className="text-xl group-hover:scale-110 transition-transform">🛍️</span>
-                    <span>Demo Customer</span>
-                </button>
-                <div className="w-px bg-slate-200 h-8"></div>
+            <div className="bg-slate-50 p-4 text-center border-t border-slate-200 w-full flex justify-center">
                 <button 
                     type="button" 
                     onClick={onDemoLogin}
