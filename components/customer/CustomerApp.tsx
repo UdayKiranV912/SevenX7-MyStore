@@ -12,6 +12,7 @@ import { fetchLiveStores, fetchStoreProducts, subscribeToStoreInventory } from '
 import { saveOrder } from '../../services/orderService';
 import SevenX7Logo from '../SevenX7Logo';
 import { MOCK_STORES } from '../../constants';
+import { watchLocation, clearWatch } from '../../services/locationService';
 
 interface CustomerAppProps {
   user: UserState;
@@ -32,22 +33,34 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
   const [showPayment, setShowPayment] = useState(false);
   const [pendingOrderDetails, setPendingOrderDetails] = useState<any>(null);
 
-  // User Location
+  // User Location State - Initialize with user prop, but update live
   const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(user.location || { lat: 12.9716, lng: 77.5946 });
 
-  // 1. Initial Load & Location
+  // 1. Live Location Tracking (App Level)
   useEffect(() => {
-    // If we have a user location, use it. Else default to Bangalore
-    const lat = user.location?.lat || 12.9716;
-    const lng = user.location?.lng || 77.5946;
+    // If user provided a static location, start there.
+    // Then watch for movement.
+    const watchId = watchLocation(
+        (loc) => {
+            setCurrentLocation({ lat: loc.lat, lng: loc.lng });
+        },
+        (err) => console.log("Location watch silent fail", err)
+    );
+
+    return () => {
+        if (watchId !== -1) clearWatch(watchId);
+    };
+  }, []);
+
+  // 2. Load Stores based on Location
+  useEffect(() => {
+    const lat = currentLocation?.lat || 12.9716;
+    const lng = currentLocation?.lng || 77.5946;
     
     const loadStores = async () => {
         setIsLoading(true);
         try {
-            // Attempt to fetch real stores from DB
             let liveStores = await fetchLiveStores(lat, lng);
-            
-            // If DB is empty (first run), mix in Mock stores for demo feel
             if (liveStores.length === 0) {
                  liveStores = MOCK_STORES;
             }
@@ -61,20 +74,18 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
     };
     
     loadStores();
-  }, [user.location]);
+  }, [currentLocation]); // Re-fetch if location changes significantly? Maybe throttle this in real app.
 
-  // 2. Load Store Products when a Store is Selected
+  // 3. Load Store Products when a Store is Selected
   useEffect(() => {
       if (!selectedStore) return;
 
       const loadProducts = async () => {
           setIsLoading(true);
           try {
-              // Fetch products with Store-Specific Pricing
               const products = await fetchStoreProducts(selectedStore.id);
               setStoreProducts(products);
               
-              // Real-time Inventory Listeners
               subscribeToStoreInventory(selectedStore.id, () => {
                   fetchStoreProducts(selectedStore.id).then(setStoreProducts);
               });
@@ -95,7 +106,6 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
     const finalPrice = price || product.price;
 
     setCart(prev => {
-        // Check if item exists (Same Product ID AND Same Brand)
         const existingIdx = prev.findIndex(item => item.originalProductId === product.id && item.selectedBrand === brandName);
         
         if (existingIdx > -1) {
@@ -106,9 +116,9 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
 
         return [...prev, {
             ...product,
-            id: `${product.id}-${brandName}-${Date.now()}`, // Unique Cart ID
+            id: `${product.id}-${brandName}-${Date.now()}`,
             originalProductId: product.id,
-            price: finalPrice, // Use brand specific price
+            price: finalPrice, 
             quantity,
             selectedBrand: brandName,
             storeId: selectedStore.id,
@@ -150,13 +160,12 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
           deliveryAddress: user.address || 'Current Location',
           storeName: cart[0].storeName,
           storeLocation: selectedStore ? { lat: selectedStore.lat, lng: selectedStore.lng } : undefined,
-          userLocation: user.location || undefined,
+          userLocation: currentLocation || undefined,
           splits: pendingOrderDetails.splits,
           customerName: user.name,
           customerPhone: user.phone
       };
 
-      // Save to Supabase
       if (user.id) {
           await saveOrder(user.id, newOrder);
       }
@@ -207,6 +216,7 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
                              selectedStore={null}
                              onSelectStore={(s) => { setSelectedStore(s); setActiveView('STORE'); }}
                              mode="DELIVERY"
+                             enableLiveTracking={true}
                          />
                          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-lg text-xs font-bold text-slate-800 pointer-events-none">
                              {stores.length} Stores Nearby
@@ -294,7 +304,7 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
                                              count={count}
                                              onAdd={(p) => addToCart(p, 1, 'Generic', p.price)}
                                              onUpdateQuantity={(pid, delta) => {
-                                                  // Find specific cart item to update (simplified for sticker view)
+                                                  // Find specific cart item to update
                                                   const cartItem = cart.find(c => c.originalProductId === pid);
                                                   if(cartItem) updateQuantity(cartItem.id, delta);
                                              }}
@@ -311,15 +321,15 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
             {/* ORDERS VIEW */}
             {activeView === 'ORDERS' && (
                 <div className="animate-fade-in min-h-screen bg-slate-50">
-                    <MyOrders userLocation={user.location} userId={user.id} />
+                    <MyOrders userLocation={currentLocation} userId={user.id} />
                 </div>
             )}
 
             {/* PROFILE VIEW */}
             {activeView === 'PROFILE' && (
                 <UserProfile 
-                    user={user} 
-                    onUpdateUser={(updates) => { /* Handle User Update State Lift */ }} 
+                    user={{...user, location: currentLocation}} 
+                    onUpdateUser={(updates) => { /* State lifted or handled by SWR/Context in real app */ }} 
                     onLogout={onLogout} 
                 />
             )}
@@ -338,7 +348,7 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
                         onAddressChange={() => {}}
                         activeStore={selectedStore}
                         stores={stores}
-                        userLocation={user.location}
+                        userLocation={currentLocation}
                         isPage={true}
                         onClose={() => setActiveView('HOME')}
                     />

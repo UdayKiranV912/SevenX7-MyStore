@@ -14,6 +14,13 @@ export const MyOrders: React.FC<MyOrdersProps> = ({ userLocation, onPayNow, user
   const [orders, setOrders] = useState<Order[]>([]);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [tick, setTick] = useState(0);
+
+  // Animation Tick for Live Driver Movement
+  useEffect(() => {
+      const interval = setInterval(() => setTick(t => t + 1), 1000);
+      return () => clearInterval(interval);
+  }, []);
 
   // Fetch Orders on Mount or userId change
   useEffect(() => {
@@ -145,6 +152,22 @@ export const MyOrders: React.FC<MyOrdersProps> = ({ userLocation, onPayNow, user
       return { steps, currentIndex, progress, getLabel, getIcon };
   };
 
+  const getSimulatedDriverPos = (order: Order) => {
+      if (order.status !== 'On the way' || !order.storeLocation || !order.userLocation) return undefined;
+      
+      // Calculate progress (0 to 1) loops every 30s
+      const loopDuration = 30; // seconds
+      const offset = order.id.length; // distinct offset per order
+      const t = (tick + offset) % loopDuration;
+      const progress = t / loopDuration;
+
+      // Linear Interpolation
+      const lat = order.storeLocation.lat + (order.userLocation.lat - order.storeLocation.lat) * progress;
+      const lng = order.storeLocation.lng + (order.userLocation.lng - order.storeLocation.lng) * progress;
+      
+      return { lat, lng };
+  };
+
   return (
     <div className="pb-32 px-5 space-y-6 pt-4">
       <div className="flex items-center justify-between">
@@ -181,6 +204,8 @@ export const MyOrders: React.FC<MyOrdersProps> = ({ userLocation, onPayNow, user
             type: 'general',
             availableProductIds: []
         };
+        
+        const driverPos = getSimulatedDriverPos(order);
 
         return (
           <div 
@@ -274,6 +299,7 @@ export const MyOrders: React.FC<MyOrdersProps> = ({ userLocation, onPayNow, user
                                 showRoute={true}
                                 enableExternalNavigation={isPickup}
                                 className="h-full"
+                                driverLocation={driverPos}
                             />
                         </div>
                     )}

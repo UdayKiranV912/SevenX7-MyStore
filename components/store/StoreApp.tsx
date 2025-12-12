@@ -6,6 +6,7 @@ import { supabase } from '../../services/supabaseClient';
 import SevenX7Logo from '../SevenX7Logo';
 import { MapVisualizer } from '../MapVisualizer';
 import { INITIAL_PRODUCTS } from '../../constants';
+import { reverseGeocode } from '../../services/locationService';
 
 interface StoreAppProps {
   user: UserState;
@@ -439,10 +440,9 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
       setProfileForm(prev => ({ ...prev, lat, lng }));
       // Optional: Auto-reverse geocode on pin drop
       try {
-         const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
-         const data = await res.json();
-         if (data && data.display_name) {
-             setProfileForm(prev => ({ ...prev, address: data.display_name }));
+         const address = await reverseGeocode(lat, lng);
+         if (address) {
+             setProfileForm(prev => ({ ...prev, address }));
          }
       } catch(e) {
           console.warn("Reverse geocode failed", e);
@@ -464,9 +464,8 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
           // Reverse Geocode
           let address = profileForm.address;
           try {
-             const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${loc.lat}&lon=${loc.lng}`);
-             const data = await res.json();
-             if (data && data.display_name) address = data.display_name;
+             const foundAddr = await reverseGeocode(loc.lat, loc.lng);
+             if (foundAddr) address = foundAddr;
           } catch(e) {
               console.warn("Reverse geocode failed", e);
           }

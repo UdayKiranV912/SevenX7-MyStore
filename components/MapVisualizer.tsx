@@ -1,11 +1,13 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Store, OrderMode } from '../types';
+import { getRoute, watchLocation, clearWatch } from '../services/locationService';
 
 interface MapVisualizerProps {
   stores: Store[];
   userLat: number | null;
   userLng: number | null;
+  userAccuracy?: number | null;
   selectedStore: Store | null;
   onSelectStore: (store: Store) => void;
   className?: string;
@@ -14,12 +16,16 @@ interface MapVisualizerProps {
   enableExternalNavigation?: boolean;
   onRequestLocation?: () => void;
   onMapClick?: (lat: number, lng: number) => void;
+  isSelectionMode?: boolean; 
+  enableLiveTracking?: boolean;
+  driverLocation?: { lat: number; lng: number };
 }
 
 export const MapVisualizer: React.FC<MapVisualizerProps> = ({ 
   stores, 
   userLat, 
   userLng, 
+  userAccuracy,
   selectedStore, 
   onSelectStore, 
   className = "h-48",
@@ -27,379 +33,334 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   showRoute = false,
   enableExternalNavigation = false,
   onRequestLocation,
-  onMapClick
+  onMapClick,
+  isSelectionMode = false,
+  enableLiveTracking = true,
+  driverLocation
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
-  const markersRef = useRef<any[]>([]);
-  const userMarkerRef = useRef<any>(null);
-  const accuracyCircleRef = useRef<any>(null);
-  const routeLineRef = useRef<any>(null);
-  const clickHandlerRef = useRef<any>(null);
   
-  // Track previous props to determine what changed
-  const prevStoreLat = useRef<number | undefined>(selectedStore?.lat);
-  const prevStoreLng = useRef<number | undefined>(selectedStore?.lng);
-  const prevUserLat = useRef<number | null>(userLat);
-  const prevUserLng = useRef<number | null>(userLng);
+  // Layer Refs
+  const markersLayerRef = useRef<any>(null); // Stores
+  const userLayerRef = useRef<any>(null);    // User Dot + Accuracy
+  const routeLayerRef = useRef<any>(null);   // Route Polyline
+  const driverLayerRef = useRef<any>(null);  // Driver Marker
 
-  // Center fallback: Bangalore or Store
-  const mapCenterLat = selectedStore ? selectedStore.lat : (userLat || 12.9716);
-  const mapCenterLng = selectedStore ? selectedStore.lng : (userLng || 77.5946);
-  
-  const [dynamicDistance, setDynamicDistance] = useState<string>('');
-  const [hasUserLocation, setHasUserLocation] = useState(false);
-  const [isLocating, setIsLocating] = useState(false);
+  // State
+  const [isMapReady, setIsMapReady] = useState(false);
+  const [isFollowingUser, setIsFollowingUser] = useState(!isSelectionMode);
+  const [internalUserLoc, setInternalUserLoc] = useState<{lat: number, lng: number, acc: number} | null>(null);
+  const [routeDistance, setRouteDistance] = useState<string>('');
+  const [gpsError, setGpsError] = useState<string | null>(null);
 
-  // Sync state with props
-  useEffect(() => {
-    if (userLat && userLng) {
-        setHasUserLocation(true);
-        setIsLocating(false);
-    } else {
-        setHasUserLocation(false);
-    }
-  }, [userLat, userLng]);
+  // Computed Locations
+  const finalUserLat = internalUserLoc?.lat ?? userLat;
+  const finalUserLng = internalUserLoc?.lng ?? userLng;
+  const finalAccuracy = internalUserLoc?.acc ?? userAccuracy ?? 50;
 
-  // FIX: Force map resize to prevent grey tiles
-  useEffect(() => {
-    if (mapInstanceRef.current) {
-        setTimeout(() => {
-            mapInstanceRef.current.invalidateSize();
-        }, 200);
-    }
-  });
-
-  // Helper Distance Calc
-  const calculateDist = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-    const R = 6371; 
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-              Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return (R * c).toFixed(1) + ' km';
-  };
-
-  // Distance Update
-  useEffect(() => {
-      const lat = userLat;
-      const lng = userLng;
-
-      if (selectedStore && lat && lng) {
-          const dist = calculateDist(lat, lng, selectedStore.lat, selectedStore.lng);
-          setDynamicDistance(dist);
-      } else {
-        setDynamicDistance('');
-      }
-  }, [userLat, userLng, selectedStore]);
-
-  // 1. Initialize Map Instance
+  // 1. Initialize Map
   useEffect(() => {
     const L = (window as any).L;
-    if (!L || !mapContainerRef.current) return;
+    if (!L || !mapContainerRef.current || mapInstanceRef.current) return;
 
-    if (!mapInstanceRef.current) {
-      mapInstanceRef.current = L.map(mapContainerRef.current, {
-        center: [mapCenterLat, mapCenterLng],
-        zoom: 14,
-        zoomControl: false,
-        attributionControl: false
+    // Initial Center
+    const startLat = selectedStore ? selectedStore.lat : (finalUserLat || 12.9716);
+    const startLng = selectedStore ? selectedStore.lng : (finalUserLng || 77.5946);
+
+    const map = L.map(mapContainerRef.current, {
+      center: [startLat, startLng],
+      zoom: 16,
+      zoomControl: false,
+      attributionControl: false,
+      dragging: true,
+      tap: true
+    });
+
+    // Tiles
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '',
+      subdomains: 'abcd',
+      maxZoom: 20
+    }).addTo(map);
+
+    // Initialize Layers
+    markersLayerRef.current = L.layerGroup().addTo(map);
+    userLayerRef.current = L.layerGroup().addTo(map);
+    routeLayerRef.current = L.layerGroup().addTo(map);
+    driverLayerRef.current = L.layerGroup().addTo(map);
+
+    // Event Listeners
+    map.on('dragstart', () => {
+      setIsFollowingUser(false);
+    });
+
+    if (isSelectionMode && onMapClick) {
+      map.on('moveend', () => {
+        const center = map.getCenter();
+        onMapClick(center.lat, center.lng);
       });
-
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: ''
-      }).addTo(mapInstanceRef.current);
     }
-  }, []); // Run once
 
-  // 2. Handle Click / Editing Mode
-  useEffect(() => {
-      if (!mapInstanceRef.current) return;
-      
-      if (onMapClick) {
-        if (clickHandlerRef.current) {
-            mapInstanceRef.current.off('click', clickHandlerRef.current);
-        }
-        
-        clickHandlerRef.current = (e: any) => {
-            onMapClick(e.latlng.lat, e.latlng.lng);
-        };
-        
-        mapInstanceRef.current.on('click', clickHandlerRef.current);
-        if (mapContainerRef.current) mapContainerRef.current.style.cursor = 'crosshair';
-    } else {
-         if (clickHandlerRef.current) {
-             mapInstanceRef.current.off('click', clickHandlerRef.current);
-             clickHandlerRef.current = null;
-         }
-         if (mapContainerRef.current) mapContainerRef.current.style.cursor = 'grab';
-    }
-  }, [onMapClick]);
+    mapInstanceRef.current = map;
+    setIsMapReady(true);
+    
+    // Resize fix
+    setTimeout(() => map.invalidateSize(), 200);
 
-  // 3. User Marker Logic (Dedicated Effect for Stability)
-  useEffect(() => {
-      const L = (window as any).L;
-      if (!mapInstanceRef.current || !L) return;
-
-      if (userLat && userLng) {
-          if (!userMarkerRef.current) {
-               // Create User Marker
-               userMarkerRef.current = L.marker([userLat, userLng], {
-                  zIndexOffset: 1000, // Ensure it's on top
-                  icon: L.divIcon({
-                      className: 'bg-transparent border-none', // Crucial for clean look
-                      html: `<div class="relative flex items-center justify-center w-8 h-8 -ml-2 -mt-2">
-                                  <div class="w-4 h-4 bg-blue-500 rounded-full border-2 border-white shadow-md z-20 relative"></div>
-                                  <div class="absolute inset-0 bg-blue-500/30 rounded-full animate-ping z-10"></div>
-                              </div>`,
-                      iconSize: [32, 32],
-                      iconAnchor: [16, 16] // Center the anchor
-                  })
-               }).addTo(mapInstanceRef.current);
-  
-               // Create Accuracy Circle
-               accuracyCircleRef.current = L.circle([userLat, userLng], {
-                   radius: 100, // Visual radius
-                   color: '#3b82f6',
-                   fillColor: '#3b82f6',
-                   fillOpacity: 0.08,
-                   weight: 1,
-                   dashArray: '4, 4'
-               }).addTo(mapInstanceRef.current);
-  
-          } else {
-              // Update positions
-              userMarkerRef.current.setLatLng([userLat, userLng]);
-              userMarkerRef.current.setOpacity(1);
-              
-              if (accuracyCircleRef.current) {
-                  accuracyCircleRef.current.setLatLng([userLat, userLng]);
-              }
-          }
-      } else {
-          // Hide if no location
-          if (userMarkerRef.current) userMarkerRef.current.setOpacity(0);
-          if (accuracyCircleRef.current) mapInstanceRef.current.removeLayer(accuracyCircleRef.current);
-          accuracyCircleRef.current = null;
+    return () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
       }
-  }, [userLat, userLng]);
+    };
+  }, []); // Run once on mount
 
-  // 4. Store Markers Logic
+  // 2. Watch Location (Internal High Accuracy)
   useEffect(() => {
-      const L = (window as any).L;
-      if (!mapInstanceRef.current || !L) return;
+    if (!enableLiveTracking || isSelectionMode) return;
 
-      // Clear existing store markers
-      markersRef.current.forEach(m => mapInstanceRef.current.removeLayer(m));
-      markersRef.current = [];
+    const watchId = watchLocation(
+      (loc) => {
+        setInternalUserLoc({ lat: loc.lat, lng: loc.lng, acc: loc.accuracy });
+        setGpsError(null);
+      },
+      (err) => {
+        console.warn("Map GPS Error:", err);
+        setGpsError("GPS Signal Weak");
+      }
+    );
 
-      const createIcon = (type: Store['type'], isSelected: boolean) => {
-         let color = '#ef4444'; 
-         let emoji = '🏪';
-         let borderColor = isSelected ? '#000' : '#fff';
-         
-         if (type === 'produce') { color = '#22c55e'; emoji = '🥦'; } 
-         else if (type === 'dairy') { color = '#3b82f6'; emoji = '🥛'; }
-  
-         return L.divIcon({
-            className: 'bg-transparent border-none',
-            html: `<div style="
-              background-color: ${color};
-              width: ${isSelected ? 40 : 30}px;
-              height: ${isSelected ? 40 : 30}px;
-              border-radius: 50%;
-              border: ${isSelected ? '3px' : '2px'} solid ${borderColor};
-              box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-              display: flex; 
-              align-items: center; 
-              justify-content: center;
-              font-size: ${isSelected ? 22 : 16}px;
-              z-index: ${isSelected ? 100 : 1};
-              transition: all 0.2s;
-              cursor: pointer;
-              position: relative;
-            ">
-              ${emoji}
-              ${isSelected && onMapClick ? '<div style="position:absolute; bottom:-8px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:8px solid #000;"></div>' : ''}
-            </div>`,
-            iconSize: [isSelected ? 40 : 30, isSelected ? 40 : 30],
-            iconAnchor: [isSelected ? 20 : 15, isSelected ? 20 : 15] 
-         });
-      };
-  
-      stores.forEach(store => {
-        const isSelected = selectedStore?.id === store.id;
-        const marker = L.marker([store.lat, store.lng], {
-          icon: createIcon(store.type, isSelected),
-          zIndexOffset: isSelected ? 900 : 0
-        }).addTo(mapInstanceRef.current);
-  
-        marker.on('click', () => {
-            onSelectStore(store);
-            if (mode === 'PICKUP' && isSelected && enableExternalNavigation) {
-                openGoogleMaps();
-            }
+    return () => clearWatch(watchId);
+  }, [enableLiveTracking, isSelectionMode]);
+
+  // 3. Update User Marker & Camera
+  useEffect(() => {
+    const L = (window as any).L;
+    if (!isMapReady || !L || !mapInstanceRef.current) return;
+    if (!finalUserLat || !finalUserLng) return;
+
+    // Clear previous user marker
+    userLayerRef.current.clearLayers();
+
+    if (!isSelectionMode) {
+        // Accuracy Circle
+        L.circle([finalUserLat, finalUserLng], {
+          radius: finalAccuracy,
+          color: 'transparent',
+          fillColor: '#3b82f6',
+          fillOpacity: 0.15
+        }).addTo(userLayerRef.current);
+
+        // Pulsing Blue Dot
+        const icon = L.divIcon({
+          className: 'bg-transparent border-none',
+          html: `
+            <div class="relative w-6 h-6">
+                <div class="absolute inset-0 bg-blue-500/40 rounded-full animate-ping"></div>
+                <div class="absolute inset-0 m-auto w-4 h-4 bg-blue-600 rounded-full border-[2px] border-white shadow-md"></div>
+            </div>
+          `,
+          iconSize: [24, 24],
+          iconAnchor: [12, 12]
         });
-        markersRef.current.push(marker);
-      });
 
-  }, [stores, selectedStore, mode, onMapClick]); // Dependencies for markers
+        const marker = L.marker([finalUserLat, finalUserLng], { icon, zIndexOffset: 1000 })
+          .addTo(userLayerRef.current);
 
-  // 5. Route Line Logic
-  useEffect(() => {
-      const L = (window as any).L;
-      if (!mapInstanceRef.current || !L) return;
-
-      if (routeLineRef.current) {
-          mapInstanceRef.current.removeLayer(routeLineRef.current);
-          routeLineRef.current = null;
-      }
-  
-      if (selectedStore && showRoute && userLat && userLng) {
-          const latlngs = [
-              [userLat, userLng],
-              [selectedStore.lat, selectedStore.lng]
-          ];
-          
-          routeLineRef.current = L.polyline(latlngs, {
-              color: '#059669', 
-              weight: 4,
-              opacity: 0.8,
-              dashArray: '8, 8', 
-              lineCap: 'round',
-              className: 'animate-dash' // Assuming custom CSS for dash animation if possible
-          }).addTo(mapInstanceRef.current);
-  
-          if (mode === 'PICKUP' && enableExternalNavigation) {
-              routeLineRef.current.on('click', (e: any) => openGoogleMaps(e.originalEvent));
-          }
-          
-          // Fit bounds to show route
-          const bounds = L.latLngBounds(latlngs);
-          mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 15, animate: true });
-      }
-  }, [selectedStore, showRoute, userLat, userLng, mode]);
-
-  // 6. Intelligent Centering (FlyTo)
-  useEffect(() => {
-      if (!mapInstanceRef.current) return;
-      
-      const storeChanged = selectedStore?.lat !== prevStoreLat.current || selectedStore?.lng !== prevStoreLng.current;
-      const userChanged = userLat !== prevUserLat.current || userLng !== prevUserLng.current;
-      
-      // Update refs
-      prevStoreLat.current = selectedStore?.lat;
-      prevStoreLng.current = selectedStore?.lng;
-      prevUserLat.current = userLat;
-      prevUserLng.current = userLng;
-
-      // Logic:
-      // If manually editing (onMapClick exists), usually we follow the store pin (which moves on click).
-      // If viewing (no onMapClick):
-      // - If "Locate Me" was clicked (isLocating), fly to user.
-      // - If Store was selected, fly to store.
-      
-      if (storeChanged && selectedStore) {
-          // Store location updated
-          mapInstanceRef.current.flyTo([selectedStore.lat, selectedStore.lng], 16, { duration: 0.8 });
-      } else if (isLocating && userLat && userLng) {
-          // Explicit user locate request
-          mapInstanceRef.current.flyTo([userLat, userLng], 16, { duration: 1.5 });
-          setTimeout(() => setIsLocating(false), 2000); // Reset lock after animation
-      } else if (userChanged && userLat && userLng && !selectedStore) {
-          // If no store selected and user moves, follow user (e.g. initial load)
-          mapInstanceRef.current.flyTo([userLat, userLng], 15);
-      }
-
-  }, [selectedStore, userLat, userLng, isLocating]);
-
-
-  const handleLocateMe = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsLocating(true); // Triggers the FlyTo effect
-
-    if (onRequestLocation) {
-        onRequestLocation();
+        // Follow Logic
+        if (isFollowingUser) {
+           mapInstanceRef.current.flyTo([finalUserLat, finalUserLng], 17, {
+             animate: true,
+             duration: 1.5,
+             easeLinearity: 0.25
+           });
+        }
     }
+  }, [finalUserLat, finalUserLng, finalAccuracy, isMapReady, isSelectionMode, isFollowingUser]);
+
+  // 4. Update Store Markers
+  useEffect(() => {
+    const L = (window as any).L;
+    if (!isMapReady || !L) return;
+
+    markersLayerRef.current.clearLayers();
+
+    if (isSelectionMode) return;
+
+    stores.forEach(store => {
+       const isSelected = selectedStore?.id === store.id;
+       let color = '#f97316'; // Orange
+       let emoji = '🏪';
+       if (store.type === 'produce') { color = '#10b981'; emoji = '🥦'; } 
+       else if (store.type === 'dairy') { color = '#3b82f6'; emoji = '🥛'; }
+
+       const icon = L.divIcon({
+          className: 'bg-transparent border-none',
+          html: `<div style="
+            background-color: ${color};
+            width: ${isSelected ? 48 : 36}px;
+            height: ${isSelected ? 48 : 36}px;
+            border-radius: 50% 50% 50% 0;
+            transform: rotate(-45deg) ${isSelected ? 'scale(1.1)' : 'scale(1)'};
+            border: 3px solid white;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+            display: flex; 
+            align-items: center; 
+            justify-content: center;
+            transition: all 0.3s;
+            cursor: pointer;
+          ">
+            <div style="transform: rotate(45deg); font-size: ${isSelected ? 24 : 18}px;">${emoji}</div>
+          </div>`,
+          iconSize: [isSelected ? 48 : 36, isSelected ? 48 : 36],
+          iconAnchor: [isSelected ? 24 : 18, isSelected ? 44 : 34] 
+       });
+
+       const m = L.marker([store.lat, store.lng], { icon, zIndexOffset: isSelected ? 900 : 800 })
+         .on('click', () => {
+             onSelectStore(store);
+             setIsFollowingUser(false);
+             mapInstanceRef.current.flyTo([store.lat, store.lng], 16.5, { animate: true });
+         });
+       
+       m.addTo(markersLayerRef.current);
+    });
+
+  }, [stores, selectedStore, isMapReady, isSelectionMode]);
+
+  // 5. Driver Marker
+  useEffect(() => {
+    const L = (window as any).L;
+    if (!isMapReady || !L) return;
+
+    driverLayerRef.current.clearLayers();
+
+    if (driverLocation) {
+        const icon = L.divIcon({
+            className: 'bg-transparent border-none',
+            html: `<div style="font-size: 32px; filter: drop-shadow(0 2px 5px rgba(0,0,0,0.2)); transition: transform 0.5s linear;">🛵</div>`,
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
+        });
+
+        L.marker([driverLocation.lat, driverLocation.lng], { icon, zIndexOffset: 2000 })
+          .addTo(driverLayerRef.current);
+    }
+  }, [driverLocation, isMapReady]);
+
+  // 6. Route Line
+  useEffect(() => {
+    const L = (window as any).L;
+    if (!isMapReady || !L) return;
+
+    routeLayerRef.current.clearLayers();
+    setRouteDistance('');
+
+    if (showRoute && selectedStore && finalUserLat && finalUserLng && !isSelectionMode) {
+       getRoute(finalUserLat, finalUserLng, selectedStore.lat, selectedStore.lng)
+         .then(route => {
+             if (route && mapInstanceRef.current) {
+                L.polyline(route.coordinates, {
+                   color: '#10b981',
+                   weight: 5,
+                   opacity: 0.8,
+                   lineCap: 'round',
+                   dashArray: '10, 10',
+                   className: 'animate-pulse'
+                }).addTo(routeLayerRef.current);
+
+                setRouteDistance((route.distance / 1000).toFixed(1) + ' km');
+                
+                // If this is the first route render, fit bounds
+                if (!isFollowingUser) {
+                   const bounds = L.latLngBounds(route.coordinates);
+                   mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50] });
+                }
+             }
+         });
+    }
+  }, [selectedStore, showRoute, finalUserLat, finalUserLng, isMapReady, isSelectionMode]);
+
+  // Handlers
+  const handleRecenter = () => {
+      setIsFollowingUser(true);
+      if (onRequestLocation) onRequestLocation();
+      
+      if (finalUserLat && finalUserLng && mapInstanceRef.current) {
+          mapInstanceRef.current.flyTo([finalUserLat, finalUserLng], 17, { animate: true });
+      }
   };
 
-  const openGoogleMaps = (e?: React.MouseEvent) => {
-    if (e) {
-        e.stopPropagation();
-        e.preventDefault();
-    }
-    if (selectedStore) {
-        const url = `https://www.google.com/maps/dir/?api=1&destination=${selectedStore.lat},${selectedStore.lng}`;
-        window.open(url, '_blank');
-    }
+  const openExternalMaps = () => {
+      if (selectedStore) {
+          window.open(`https://www.google.com/maps/dir/?api=1&destination=${selectedStore.lat},${selectedStore.lng}`, '_blank');
+      }
   };
 
   return (
-    <div className={`w-full bg-slate-100 rounded-[2.5rem] overflow-hidden relative shadow-inner border border-white ${className}`}>
-      <div ref={mapContainerRef} className="w-full h-full z-0 mix-blend-multiply opacity-90" style={{ minHeight: '100%' }}></div>
+    <div className={`w-full bg-slate-50 rounded-[2.5rem] overflow-hidden relative shadow-inner border border-white ${className}`}>
+      <div ref={mapContainerRef} className="w-full h-full z-0 bg-slate-100" />
 
-      <button 
-        onClick={handleLocateMe}
-        className={`absolute top-4 left-4 z-[1000] w-10 h-10 bg-white rounded-xl shadow-md flex items-center justify-center transition-all cursor-pointer ${
-            isLocating ? 'text-brand-DEFAULT ring-2 ring-brand-light' : 
-            !hasUserLocation ? 'text-slate-400 hover:text-slate-600' : 'text-blue-600 hover:bg-blue-50 active:scale-95'
-        }`}
-        title="Live Location"
-        type="button"
-      >
-        {isLocating ? (
-             <div className="w-5 h-5 border-2 border-slate-200 border-t-brand-DEFAULT rounded-full animate-spin"></div>
-        ) : (
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 pointer-events-none">
-                <path fillRule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
-            </svg>
-        )}
-      </button>
-
-      {enableExternalNavigation && selectedStore && mode === 'PICKUP' && (
-          <button 
-            onClick={openGoogleMaps}
-            className="absolute top-4 right-4 z-[1000] bg-brand-DEFAULT text-white pl-3 pr-4 py-2.5 rounded-full shadow-lg flex items-center gap-2 hover:bg-brand-dark active:scale-95 transition-all font-bold text-xs animate-scale-in group cursor-pointer"
-          >
-             <div className="w-6 h-6 bg-white/20 rounded-full flex items-center justify-center group-hover:bg-white/30">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M13 9l3 3m0 0l-3 3m3-3H8m13 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-             </div>
-             <span>Get Directions</span>
-          </button>
+      {/* GPS Error Toast */}
+      {gpsError && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-50 text-red-600 px-3 py-1 rounded-full text-[10px] font-bold shadow-md z-[1000] border border-red-100 flex items-center gap-1">
+             <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+             {gpsError}
+          </div>
       )}
 
-      {selectedStore && (
-        <div 
-            onClick={mode === 'PICKUP' ? openGoogleMaps : undefined}
-            className={`absolute bottom-3 left-3 right-3 bg-white/95 backdrop-blur-md px-4 py-3 rounded-2xl shadow-soft-xl flex items-center justify-between border border-white/50 z-[1000] animate-fade-in-up ${mode === 'PICKUP' ? 'cursor-pointer active:scale-[0.98] transition-transform' : ''}`}
-        >
-             <div className="flex items-center gap-3 overflow-hidden">
-                 <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shadow-sm text-white flex-shrink-0 ${
-                    selectedStore.type === 'produce' ? 'bg-emerald-500' : selectedStore.type === 'dairy' ? 'bg-sky-500' : 'bg-orange-500'
+      {/* Center Pin for Selection Mode */}
+      {isSelectionMode && (
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[500] pointer-events-none flex flex-col items-center -mt-[38px]">
+              <div className="w-10 h-10 bg-slate-900 rounded-full flex items-center justify-center text-white shadow-2xl border-4 border-white z-20">
+                  <div className="w-3 h-3 bg-white rounded-full"></div>
+              </div>
+              <div className="w-0.5 h-6 bg-slate-900 mx-auto -mt-1 rounded-b-full"></div>
+              <div className="bg-white/90 backdrop-blur px-3 py-1.5 rounded-full shadow-lg text-[10px] font-black uppercase text-slate-800 tracking-wide mt-2 border border-slate-100">
+                  Set Location
+              </div>
+          </div>
+      )}
+
+      {/* Recenter Button */}
+      <button 
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRecenter(); }}
+        className={`absolute bottom-6 right-4 z-[400] w-12 h-12 bg-white rounded-2xl shadow-float flex items-center justify-center transition-all cursor-pointer border border-white active:scale-95 hover:bg-slate-50 ${isFollowingUser ? 'text-blue-500 ring-2 ring-blue-100' : 'text-slate-600'}`}
+        type="button"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+            <path fillRule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+        </svg>
+      </button>
+
+      {/* Store Card Overlay */}
+      {selectedStore && !isSelectionMode && (
+         <div 
+            onClick={() => { setIsFollowingUser(false); if(mapInstanceRef.current) mapInstanceRef.current.flyTo([selectedStore.lat, selectedStore.lng], 17); }}
+            className="absolute bottom-6 left-4 right-16 bg-white/95 backdrop-blur-md px-4 py-3 rounded-2xl shadow-float flex items-center justify-between border border-white z-[400] animate-slide-up cursor-pointer"
+         >
+             <div className="flex items-center gap-3 overflow-hidden flex-1">
+                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg shadow-sm text-white flex-shrink-0 ${
+                    selectedStore.type === 'produce' ? 'bg-emerald-500' : selectedStore.type === 'dairy' ? 'bg-blue-500' : 'bg-orange-500'
                  }`}>
                     {selectedStore.type === 'produce' ? '🥦' : selectedStore.type === 'dairy' ? '🥛' : '🏪'}
                  </div>
                  <div className="min-w-0">
                     <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide flex items-center gap-1">
-                        {mode === 'DELIVERY' ? 'Delivering From' : 'Pickup At'}
+                        {mode === 'DELIVERY' ? 'Deliver From' : 'Visit'}
                     </div>
                     <div className="text-sm font-black text-slate-800 truncate">{selectedStore.name}</div>
                  </div>
              </div>
              
-             {showRoute && hasUserLocation && (
+             {showRoute && routeDistance && (
                <div className="text-right whitespace-nowrap pl-2 border-l border-slate-100 ml-2">
                   <div className="text-[10px] font-bold text-slate-400 uppercase">Dist.</div>
-                  <div className="text-sm font-black text-brand-DEFAULT">{dynamicDistance || selectedStore.distance}</div>
+                  <div className="text-sm font-black text-brand-DEFAULT">{routeDistance}</div>
                </div>
              )}
-        </div>
+         </div>
       )}
     </div>
   );

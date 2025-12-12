@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { CartItem, DeliveryType, Store, Product } from '../types';
 import { MapVisualizer } from './MapVisualizer';
 import { INITIAL_PRODUCTS, MOCK_STORES } from '../constants';
+import { reverseGeocode } from '../services/locationService';
 
 // --- Helper Component for Row Animation ---
 interface CartItemRowProps {
@@ -228,10 +229,9 @@ export const CartDetails: React.FC<CartDetailsProps> = ({
 
     if (lat && lng) {
         try {
-            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
-            const data = await response.json();
-            if (data && data.display_name) {
-                onAddressChange(data.display_name);
+            const address = await reverseGeocode(lat, lng);
+            if (address) {
+                onAddressChange(address);
             } else {
                 alert("Could not determine address from coordinates.");
             }
