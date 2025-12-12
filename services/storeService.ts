@@ -77,36 +77,79 @@ export const fetchLiveStores = async (lat: number, lng: number): Promise<Store[]
 /**
  * Fetch products for a specific store.
  * Returns a list of Products with STORE-SPECIFIC pricing.
+ * Now supports Hybrid: Static Constants + Dynamic DB Products.
  */
 export const fetchStoreProducts = async (storeId: string): Promise<Product[]> => {
   try {
-    // Get inventory for this store
-    const { data: inventory, error: invError } = await supabase
+    // 1. Get inventory for this store (Price & Stock)
+    const { data: inventoryData, error: invError } = await supabase
       .from('inventory')
-      .select('product_id, price, in_stock')
+      .select('product_id, price, in_stock, brand_data')
       .eq('store_id', storeId)
       .eq('in_stock', true);
 
     if (invError) throw invError;
+    
+    // Explicitly cast to any[] to avoid 'unknown' type errors
+    const inventory = inventoryData as any[] | null;
+
     if (!inventory || inventory.length === 0) return [];
 
-    // In a full app, we would query the 'products' table here.
-    // For this hybrid MVP, we map the IDs back to our INITIAL_PRODUCTS catalog,
-    // BUT we override the price with the Store's price.
+    // 2. Separate IDs into "Known Static" and "Unknown/Custom"
+    const inventoryMap = new Map(inventory.map(i => [i.product_id, i]));
+    const allIds = inventory.map(i => i.product_id);
     
-    // 1. Try to find in static catalog first (Performance)
-    const products = inventory.map(inv => {
-      const catalogItem = INITIAL_PRODUCTS.find(p => p.id === inv.product_id);
-      if (catalogItem) {
-        return {
-          ...catalogItem,
-          price: inv.price // OVERRIDE with Store Admin's price
-        };
-      }
-      return null;
+    // IDs that exist in our constants
+    const staticProductIds = new Set(INITIAL_PRODUCTS.map(p => p.id));
+    const customIds = allIds.filter((id: string) => !staticProductIds.has(id));
+
+    // 3. Fetch details for Custom IDs from 'products' table
+    let customProducts: Product[] = [];
+    if (customIds.length > 0) {
+        const { data: dbProducts, error: prodError } = await supabase
+            .from('products')
+            .select('*')
+            .in('id', customIds);
+        
+        if (!prodError && dbProducts) {
+            customProducts = dbProducts.map((p: any) => ({
+                id: p.id,
+                name: p.name,
+                category: p.category,
+                emoji: p.image_url || '📦', // Map image_url back to emoji
+                price: p.base_price || 0,
+                description: p.description,
+                brands: [] // Custom products usually generic unless extended
+            }));
+        }
+    }
+
+    // 4. Merge and Map final list
+    const finalProducts: Product[] = allIds.map((id: string) => {
+        const invItem = inventoryMap.get(id);
+        if (!invItem) return null;
+
+        // Try finding in Static
+        let baseProduct = INITIAL_PRODUCTS.find(p => p.id === id);
+        
+        // If not static, try found Custom
+        if (!baseProduct) {
+            baseProduct = customProducts.find(p => p.id === id);
+        }
+
+        if (baseProduct) {
+            return {
+                ...baseProduct,
+                price: invItem.price, // Store Override
+                // If inventory has brand_data, we could theoretically merge it here, 
+                // but for listing we mainly need the base price.
+                // brandDetails are usually used in the details modal or cart.
+            };
+        }
+        return null;
     }).filter(Boolean) as Product[];
 
-    return products;
+    return finalProducts;
 
   } catch (error) {
     console.error("Error fetching store inventory:", error);

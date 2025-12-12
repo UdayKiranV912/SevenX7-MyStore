@@ -19,6 +19,7 @@ interface MapVisualizerProps {
   isSelectionMode?: boolean; 
   enableLiveTracking?: boolean;
   driverLocation?: { lat: number; lng: number };
+  forcedCenter?: { lat: number; lng: number } | null; // NEW: Programmatic control
 }
 
 export const MapVisualizer: React.FC<MapVisualizerProps> = ({ 
@@ -36,7 +37,8 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   onMapClick,
   isSelectionMode = false,
   enableLiveTracking = true,
-  driverLocation
+  driverLocation,
+  forcedCenter
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
@@ -64,13 +66,28 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     const L = (window as any).L;
     if (!L || !mapContainerRef.current || mapInstanceRef.current) return;
 
-    // Initial Center
-    const startLat = selectedStore ? selectedStore.lat : (finalUserLat || 12.9716);
-    const startLng = selectedStore ? selectedStore.lng : (finalUserLng || 77.5946);
+    // Initial Center Strategy
+    // 1. Forced Center (if editing)
+    // 2. Selected Store
+    // 3. User Location
+    // 4. Default Bangalore
+    let startLat = 12.9716;
+    let startLng = 77.5946;
+
+    if (forcedCenter) {
+        startLat = forcedCenter.lat;
+        startLng = forcedCenter.lng;
+    } else if (selectedStore) {
+        startLat = selectedStore.lat;
+        startLng = selectedStore.lng;
+    } else if (finalUserLat && finalUserLng) {
+        startLat = finalUserLat;
+        startLng = finalUserLng;
+    }
 
     const map = L.map(mapContainerRef.current, {
       center: [startLat, startLng],
-      zoom: 16,
+      zoom: 17, // Tighter zoom for better accuracy
       zoomControl: false,
       attributionControl: false,
       dragging: true,
@@ -98,6 +115,8 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     if (isSelectionMode && onMapClick) {
       map.on('moveend', () => {
         const center = map.getCenter();
+        // Only trigger update if the map was moved by user (not programmatically)
+        // Note: checking this is hard in Leaflet 1.x without flags, so we debounce in parent or just accept it.
         onMapClick(center.lat, center.lng);
       });
     }
@@ -116,7 +135,18 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     };
   }, []); // Run once on mount
 
-  // 2. Watch Location (Internal High Accuracy)
+  // 2. Handle Forced Center Updates (e.g. from "Use Current Location" button)
+  useEffect(() => {
+      if (!isMapReady || !mapInstanceRef.current || !forcedCenter) return;
+      
+      setIsFollowingUser(false); // Stop following user dot if we force center elsewhere
+      mapInstanceRef.current.flyTo([forcedCenter.lat, forcedCenter.lng], 18, {
+          animate: true,
+          duration: 1.0
+      });
+  }, [forcedCenter, isMapReady]);
+
+  // 3. Watch Location (Internal High Accuracy)
   useEffect(() => {
     if (!enableLiveTracking || isSelectionMode) return;
 
@@ -134,7 +164,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     return () => clearWatch(watchId);
   }, [enableLiveTracking, isSelectionMode]);
 
-  // 3. Update User Marker & Camera
+  // 4. Update User Marker & Camera
   useEffect(() => {
     const L = (window as any).L;
     if (!isMapReady || !L || !mapInstanceRef.current) return;
@@ -143,78 +173,104 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     // Clear previous user marker
     userLayerRef.current.clearLayers();
 
+    // In Selection Mode, we still show the Blue Dot (where you ARE) but we don't follow it,
+    // because the user is dragging the map to where they want the STORE to be.
+    
+    // Accuracy Circle
     if (!isSelectionMode) {
-        // Accuracy Circle
         L.circle([finalUserLat, finalUserLng], {
           radius: finalAccuracy,
           color: 'transparent',
           fillColor: '#3b82f6',
           fillOpacity: 0.15
         }).addTo(userLayerRef.current);
+    }
 
-        // Pulsing Blue Dot
-        const icon = L.divIcon({
-          className: 'bg-transparent border-none',
-          html: `
+    // Pulsing Blue Dot without Signal Indicator
+    const icon = L.divIcon({
+      className: 'bg-transparent border-none',
+      html: `
+        <div class="relative w-full h-full flex flex-col items-center justify-center overflow-visible">
             <div class="relative w-6 h-6">
                 <div class="absolute inset-0 bg-blue-500/40 rounded-full animate-ping"></div>
-                <div class="absolute inset-0 m-auto w-4 h-4 bg-blue-600 rounded-full border-[2px] border-white shadow-md"></div>
+                <div class="absolute inset-0 m-auto w-4 h-4 bg-blue-600 rounded-full border-[2px] border-white shadow-md relative z-10"></div>
             </div>
-          `,
-          iconSize: [24, 24],
-          iconAnchor: [12, 12]
-        });
+        </div>
+      `,
+      iconSize: [24, 24],
+      iconAnchor: [12, 12]
+    });
 
-        const marker = L.marker([finalUserLat, finalUserLng], { icon, zIndexOffset: 1000 })
-          .addTo(userLayerRef.current);
+    L.marker([finalUserLat, finalUserLng], { icon, zIndexOffset: 1000 })
+      .addTo(userLayerRef.current);
 
-        // Follow Logic
-        if (isFollowingUser) {
-           mapInstanceRef.current.flyTo([finalUserLat, finalUserLng], 17, {
-             animate: true,
-             duration: 1.5,
-             easeLinearity: 0.25
-           });
-        }
+    // Follow Logic (Only if NOT selecting a location)
+    if (!isSelectionMode && isFollowingUser) {
+       mapInstanceRef.current.flyTo([finalUserLat, finalUserLng], 17, {
+         animate: true,
+         duration: 1.5,
+         easeLinearity: 0.25
+       });
     }
   }, [finalUserLat, finalUserLng, finalAccuracy, isMapReady, isSelectionMode, isFollowingUser]);
 
-  // 4. Update Store Markers
+  // 5. Update Store Markers
   useEffect(() => {
     const L = (window as any).L;
     if (!isMapReady || !L) return;
 
     markersLayerRef.current.clearLayers();
 
-    if (isSelectionMode) return;
+    if (isSelectionMode) return; // Don't show other stores when picking location
 
     stores.forEach(store => {
        const isSelected = selectedStore?.id === store.id;
-       let color = '#f97316'; // Orange
+       let color = '#f97316'; // Orange - General
        let emoji = '🏪';
-       if (store.type === 'produce') { color = '#10b981'; emoji = '🥦'; } 
-       else if (store.type === 'dairy') { color = '#3b82f6'; emoji = '🥛'; }
+       
+       if (store.type === 'produce') { 
+           color = '#10b981'; // Emerald - Produce
+           emoji = '🥦'; 
+       } else if (store.type === 'dairy') { 
+           color = '#3b82f6'; // Blue - Dairy
+           emoji = '🥛'; 
+       }
 
-       const icon = L.divIcon({
-          className: 'bg-transparent border-none',
-          html: `<div style="
+       const size = isSelected ? 56 : 40; 
+       const anchor = isSelected ? [28, 56] : [20, 40];
+
+       // Custom HTML with Bounce Animation for Selected Marker
+       const iconHtml = `
+          <div style="
             background-color: ${color};
-            width: ${isSelected ? 48 : 36}px;
-            height: ${isSelected ? 48 : 36}px;
+            width: ${size}px;
+            height: ${size}px;
             border-radius: 50% 50% 50% 0;
-            transform: rotate(-45deg) ${isSelected ? 'scale(1.1)' : 'scale(1)'};
+            transform: rotate(-45deg);
             border: 3px solid white;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
             display: flex; 
             align-items: center; 
             justify-content: center;
-            transition: all 0.3s;
+            transition: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
             cursor: pointer;
+            ${isSelected ? 'animation: bounce-marker 1s infinite alternate ease-in-out;' : ''}
           ">
-            <div style="transform: rotate(45deg); font-size: ${isSelected ? 24 : 18}px;">${emoji}</div>
-          </div>`,
-          iconSize: [isSelected ? 48 : 36, isSelected ? 48 : 36],
-          iconAnchor: [isSelected ? 24 : 18, isSelected ? 44 : 34] 
+            <div style="transform: rotate(45deg); font-size: ${isSelected ? 28 : 20}px;">${emoji}</div>
+          </div>
+          <style>
+            @keyframes bounce-marker {
+              0% { transform: rotate(-45deg) translateY(0); }
+              100% { transform: rotate(-45deg) translateY(-8px); }
+            }
+          </style>
+       `;
+
+       const icon = L.divIcon({
+          className: 'bg-transparent border-none',
+          html: iconHtml,
+          iconSize: [size, size],
+          iconAnchor: anchor
        });
 
        const m = L.marker([store.lat, store.lng], { icon, zIndexOffset: isSelected ? 900 : 800 })
@@ -229,7 +285,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
 
   }, [stores, selectedStore, isMapReady, isSelectionMode]);
 
-  // 5. Driver Marker
+  // 6. Driver Marker
   useEffect(() => {
     const L = (window as any).L;
     if (!isMapReady || !L) return;
@@ -249,7 +305,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     }
   }, [driverLocation, isMapReady]);
 
-  // 6. Route Line
+  // 7. Route Line
   useEffect(() => {
     const L = (window as any).L;
     if (!isMapReady || !L) return;
@@ -292,12 +348,6 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
       }
   };
 
-  const openExternalMaps = () => {
-      if (selectedStore) {
-          window.open(`https://www.google.com/maps/dir/?api=1&destination=${selectedStore.lat},${selectedStore.lng}`, '_blank');
-      }
-  };
-
   return (
     <div className={`w-full bg-slate-50 rounded-[2.5rem] overflow-hidden relative shadow-inner border border-white ${className}`}>
       <div ref={mapContainerRef} className="w-full h-full z-0 bg-slate-100" />
@@ -318,21 +368,24 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
               </div>
               <div className="w-0.5 h-6 bg-slate-900 mx-auto -mt-1 rounded-b-full"></div>
               <div className="bg-white/90 backdrop-blur px-3 py-1.5 rounded-full shadow-lg text-[10px] font-black uppercase text-slate-800 tracking-wide mt-2 border border-slate-100">
-                  Set Location
+                  Set Store Location
               </div>
           </div>
       )}
 
-      {/* Recenter Button */}
-      <button 
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRecenter(); }}
-        className={`absolute bottom-6 right-4 z-[400] w-12 h-12 bg-white rounded-2xl shadow-float flex items-center justify-center transition-all cursor-pointer border border-white active:scale-95 hover:bg-slate-50 ${isFollowingUser ? 'text-blue-500 ring-2 ring-blue-100' : 'text-slate-600'}`}
-        type="button"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
-            <path fillRule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
-        </svg>
-      </button>
+      {/* Recenter Button (Only show if NOT in selection mode, or used for "Locate Me") */}
+      {!isSelectionMode && (
+          <button 
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRecenter(); }}
+            className={`absolute bottom-6 right-4 z-[400] w-12 h-12 bg-white rounded-2xl shadow-float flex items-center justify-center transition-all cursor-pointer border border-white active:scale-95 hover:bg-slate-50 ${isFollowingUser ? 'text-blue-500 ring-2 ring-blue-100' : 'text-slate-600'}`}
+            type="button"
+            title="Recenter Map"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+                <path fillRule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+            </svg>
+          </button>
+      )}
 
       {/* Store Card Overlay */}
       {selectedStore && !isSelectionMode && (
@@ -350,7 +403,16 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
                     <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide flex items-center gap-1">
                         {mode === 'DELIVERY' ? 'Deliver From' : 'Visit'}
                     </div>
-                    <div className="text-sm font-black text-slate-800 truncate">{selectedStore.name}</div>
+                    <div className="flex items-center gap-2">
+                        <div className="text-sm font-black text-slate-800 truncate">{selectedStore.name}</div>
+                        <div className={`text-[8px] px-1.5 py-0.5 rounded flex-shrink-0 font-black uppercase tracking-wide border ${
+                            selectedStore.type === 'produce' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 
+                            selectedStore.type === 'dairy' ? 'bg-blue-50 text-blue-600 border-blue-100' : 
+                            'bg-orange-50 text-orange-600 border-orange-100'
+                        }`}>
+                            {selectedStore.type === 'general' ? 'Mart' : selectedStore.type}
+                        </div>
+                    </div>
                  </div>
              </div>
              

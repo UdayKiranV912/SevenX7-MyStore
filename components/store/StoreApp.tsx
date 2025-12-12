@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { UserState, Store, Order, InventoryItem, Product, BrandInventoryInfo } from '../../types';
-import { getMyStore, getStoreInventory, updateInventoryItem, deleteInventoryItem, getIncomingOrders, updateStoreOrderStatus, updateStoreProfile } from '../../services/storeAdminService';
+import { getMyStore, getStoreInventory, updateInventoryItem, deleteInventoryItem, getIncomingOrders, updateStoreOrderStatus, updateStoreProfile, createCustomProduct } from '../../services/storeAdminService';
 import { supabase } from '../../services/supabaseClient';
 import SevenX7Logo from '../SevenX7Logo';
 import { MapVisualizer } from '../MapVisualizer';
@@ -50,18 +50,34 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [profileForm, setProfileForm] = useState<Partial<Store>>({});
   const [isLocating, setIsLocating] = useState(false);
+  const [isFetchingAddress, setIsFetchingAddress] = useState(false);
   const [userLocation, setUserLocation] = useState<{lat: number; lng: number} | null>(null);
+  
+  // NEW: Ref to hold latest map center for visualizer forced updates
+  const [mapForcedCenter, setMapForcedCenter] = useState<{lat: number; lng: number} | null>(null);
   
   // Ref to hold latest location for instant access without re-renders
   const latestLocationRef = useRef<{lat: number; lng: number} | null>(null);
 
   // Inventory UI State
   const [showAddProduct, setShowAddProduct] = useState(false);
+  const [isCreatingCustom, setIsCreatingCustom] = useState(false); // Toggle between Search / Create
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('All'); // New Category Filter
+  const [selectedCategory, setSelectedCategory] = useState('All'); 
   const [draftPrices, setDraftPrices] = useState<Record<string, number>>({});
   const [draftMrps, setDraftMrps] = useState<Record<string, number>>({});
   const [draftStocks, setDraftStocks] = useState<Record<string, number>>({});
+
+  // Custom Product Form State
+  const [customProduct, setCustomProduct] = useState({
+      name: '',
+      brandName: '', // Added Brand Name
+      category: 'Staples',
+      price: '',
+      mrp: '',
+      stock: '',
+      description: ''
+  });
 
   // Stats
   const totalRevenue = orders.reduce((sum, o) => sum + o.total, 0);
@@ -69,6 +85,7 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
   
   // Get Categories for Dropdown
   const allCategories = ['All', ...Array.from(new Set(INITIAL_PRODUCTS.map(p => p.category)))];
+  const createCategories = Array.from(new Set(INITIAL_PRODUCTS.map(p => p.category)));
 
   // 0. LIVE GPS Tracking (watchPosition) - The Core Logic
   useEffect(() => {
@@ -215,12 +232,12 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
             // Initialize with some random items for demo if empty
             const demoInv = INITIAL_PRODUCTS.map(p => ({
                  ...p,
-                 inStock: ['1', '41', '81', '42'].includes(p.id), // Pre-select Rice, Milk, Chips, Curd
+                 inStock: ['1', '41', '81', '42'].includes(p.id), 
                  stock: ['1', '41', '81', '42'].includes(p.id) ? 20 : 0,
                  storePrice: p.price,
                  mrp: p.mrp || p.price,
                  isActive: ['1', '41', '81', '42'].includes(p.id),
-                 brandDetails: {} // Init empty
+                 brandDetails: {} 
             }));
             setInventory(demoInv);
             localStorage.setItem('demo_store_inventory', JSON.stringify(demoInv));
@@ -291,6 +308,72 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
         supabase.removeChannel(orderSub);
     };
   }, [myStore, user.id]);
+
+  const handleCreateCustomProduct = async () => {
+      if (!myStore || !customProduct.name || !customProduct.price) {
+          alert("Please fill in required fields");
+          return;
+      }
+
+      const price = parseFloat(customProduct.price);
+      const stock = parseInt(customProduct.stock) || 0;
+      const mrp = parseFloat(customProduct.mrp) || price;
+      const brandName = customProduct.brandName.trim() || 'Generic';
+
+      // Assign an emoji based on category
+      let emoji = '📦';
+      const cat = customProduct.category.toLowerCase();
+      if(cat.includes('staple')) emoji = '🍚';
+      if(cat.includes('fruit') || cat.includes('veg')) emoji = '🥦';
+      if(cat.includes('dairy')) emoji = '🥛';
+      if(cat.includes('snack')) emoji = '🍪';
+      if(cat.includes('oil') || cat.includes('spice')) emoji = '🌶️';
+
+      // Create new Item Object
+      const newItem: InventoryItem = {
+          id: `custom-${Date.now()}`,
+          name: customProduct.name,
+          category: customProduct.category,
+          price: price,
+          mrp: mrp,
+          emoji: emoji,
+          description: customProduct.description || 'Fresh custom item',
+          stock: stock,
+          storePrice: price,
+          inStock: true,
+          isActive: true,
+          brands: [{ name: brandName, price: price }], // Assign the brand
+          brandDetails: {
+              [brandName]: {
+                  price: price,
+                  mrp: mrp,
+                  stock: stock,
+                  inStock: true
+              }
+          }
+      };
+
+      // Optimistic Update
+      const newInventory = [...inventory, newItem];
+      setInventory(newInventory);
+
+      // Reset form
+      setCustomProduct({ name: '', brandName: '', category: 'Staples', price: '', mrp: '', stock: '', description: '' });
+      setIsCreatingCustom(false);
+      setShowAddProduct(false); // Close modal on success
+
+      // Save using Service
+      if (user.id === 'demo-user') {
+          localStorage.setItem('demo_store_inventory', JSON.stringify(newInventory));
+      } else {
+          try {
+              await createCustomProduct(myStore.id, newItem);
+          } catch (e) {
+              console.error("Failed to save custom product", e);
+              // Revert logic would go here
+          }
+      }
+  };
 
   const handleInventoryUpdate = async (
       product: InventoryItem, 
@@ -419,6 +502,8 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
           lat: myStore.lat,
           lng: myStore.lng
       });
+      // Set initial map center to store location
+      setMapForcedCenter({ lat: myStore.lat, lng: myStore.lng });
       setIsEditingProfile(true);
   };
 
@@ -435,45 +520,47 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
       }
   };
 
-  // Handler for Manual Pin Drop on Map
-  const handleMapClick = async (lat: number, lng: number) => {
+  // Handler for Manual Pin Drop on Map (Drag End)
+  const handleMapDragEnd = async (lat: number, lng: number) => {
+      // 1. Update Coords Immediately
       setProfileForm(prev => ({ ...prev, lat, lng }));
-      // Optional: Auto-reverse geocode on pin drop
+      
+      // 2. Trigger Address Lookup (Auto-Reverse Geocode)
+      setIsFetchingAddress(true);
       try {
-         const address = await reverseGeocode(lat, lng);
-         if (address) {
-             setProfileForm(prev => ({ ...prev, address }));
-         }
-      } catch(e) {
-          console.warn("Reverse geocode failed", e);
+          const address = await reverseGeocode(lat, lng);
+          if (address) {
+              setProfileForm(prev => ({ ...prev, address }));
+          }
+      } catch (e) {
+          console.warn("Reverse geocode failed on drag");
+      } finally {
+          setIsFetchingAddress(false);
       }
   };
 
   // Handler for "Use Current Location" in Profile Form
   const handleGPSLocation = async () => {
       setIsLocating(true);
+      setIsFetchingAddress(true);
       try {
           const loc = await fetchGpsLocation();
           
-          // Update Map Dot
-          setUserLocation(loc);
-          
-          // Update Form Coords
+          // 1. Force Map Center to this location
+          setMapForcedCenter({ lat: loc.lat, lng: loc.lng });
+
+          // 2. Update Form Coords
           setProfileForm(prev => ({ ...prev, lat: loc.lat, lng: loc.lng }));
 
-          // Reverse Geocode
-          let address = profileForm.address;
+          // 3. Reverse Geocode for Address Field
           try {
              const foundAddr = await reverseGeocode(loc.lat, loc.lng);
-             if (foundAddr) address = foundAddr;
+             if (foundAddr) {
+                 setProfileForm(prev => ({ ...prev, address: foundAddr }));
+             }
           } catch(e) {
               console.warn("Reverse geocode failed", e);
           }
-
-          setProfileForm(prev => ({
-              ...prev,
-              address: address || prev.address
-          }));
 
       } catch (e: any) {
           console.error("Location Error:", e);
@@ -482,6 +569,7 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
           alert(msg);
       } finally {
           setIsLocating(false);
+          setIsFetchingAddress(false);
       }
   };
 
@@ -607,7 +695,7 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
                                     <p className="text-xs text-slate-400 font-bold">{managedInventory.length} Active Items</p>
                                 </div>
                                 <button 
-                                  onClick={() => { setSearchTerm(''); setShowAddProduct(true); }}
+                                  onClick={() => { setSearchTerm(''); setShowAddProduct(true); setIsCreatingCustom(false); }}
                                   className="bg-slate-900 text-white pl-4 pr-5 py-3 rounded-2xl flex items-center justify-center shadow-lg hover:bg-black transition-all active:scale-95 gap-2"
                                   title="Add Item"
                                 >
@@ -799,147 +887,261 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
                         </div>
                     </div>
                 ) : (
-                    // CATALOG ADD VIEW
+                    // CATALOG ADD / CREATE CUSTOM VIEW
                     <div className="space-y-4 animate-slide-up bg-white min-h-[80vh] rounded-t-[2.5rem] shadow-soft-xl p-5 -mx-4 -mt-4 relative z-50">
                         <div className="flex items-center gap-3 mb-6">
-                            <button onClick={() => { setShowAddProduct(false); setSearchTerm(''); setSelectedCategory('All'); }} className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-200 transition-colors">
+                            <button onClick={() => { setShowAddProduct(false); setSearchTerm(''); setSelectedCategory('All'); setIsCreatingCustom(false); }} className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-200 transition-colors">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
                                 </svg>
                             </button>
-                            <h2 className="text-xl font-black text-slate-900">Add Products</h2>
+                            <h2 className="text-xl font-black text-slate-900">
+                                {isCreatingCustom ? 'Create Item' : 'Add Products'}
+                            </h2>
                         </div>
 
-                        <div className="sticky top-0 bg-white z-10 pb-2">
-                            {/* Search */}
-                            <div className="relative mb-3">
-                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
-                                <input 
-                                    value={searchTerm}
-                                    onChange={(e) => setSearchTerm(e.target.value)}
-                                    placeholder="Search global catalog..."
-                                    className="w-full bg-slate-50 border-none rounded-2xl py-4 pl-12 pr-4 font-bold text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-brand-DEFAULT outline-none transition-all"
-                                    autoFocus
-                                />
-                            </div>
-
-                            {/* Category Dropdown Filter */}
-                            <div className="relative">
-                                <select
-                                    value={selectedCategory}
-                                    onChange={(e) => setSelectedCategory(e.target.value)}
-                                    className="w-full appearance-none bg-slate-50 border-none rounded-2xl py-3 pl-4 pr-10 font-bold text-slate-600 text-sm focus:ring-2 focus:ring-brand-DEFAULT outline-none cursor-pointer"
+                        {/* Toggle Mode Button */}
+                        {!isCreatingCustom && (
+                            <div className="bg-slate-50 p-2 rounded-2xl mb-4 flex items-center justify-between border border-slate-100">
+                                <p className="text-xs font-bold text-slate-500 pl-2">Can't find it in catalog?</p>
+                                <button 
+                                    onClick={() => setIsCreatingCustom(true)}
+                                    className="bg-white px-4 py-2 rounded-xl text-xs font-black shadow-sm text-slate-800 border border-slate-200 hover:bg-brand-light hover:text-brand-DEFAULT hover:border-brand-DEFAULT/30 transition-all"
                                 >
-                                    {allCategories.map(cat => (
-                                        <option key={cat} value={cat}>{cat} ({cat === 'All' ? INITIAL_PRODUCTS.length : INITIAL_PRODUCTS.filter(p => p.category === cat).length})</option>
-                                    ))}
-                                </select>
-                                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-xs">
-                                    ▼
+                                    + Create New
+                                </button>
+                            </div>
+                        )}
+
+                        {isCreatingCustom ? (
+                            // CREATE CUSTOM FORM
+                            <div className="space-y-5 animate-fade-in px-1">
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase ml-2 mb-1 block">Item Name</label>
+                                    <input 
+                                        value={customProduct.name}
+                                        onChange={e => setCustomProduct({...customProduct, name: e.target.value})}
+                                        className="w-full bg-slate-50 p-4 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT placeholder-slate-300"
+                                        placeholder="e.g. Grandma's Special Pickle"
+                                        autoFocus
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase ml-2 mb-1 block">Brand Name</label>
+                                    <input 
+                                        value={customProduct.brandName}
+                                        onChange={e => setCustomProduct({...customProduct, brandName: e.target.value})}
+                                        className="w-full bg-slate-50 p-4 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT placeholder-slate-300"
+                                        placeholder="e.g. Homemade, Store Brand, etc."
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase ml-2 mb-1 block">Category</label>
+                                    <div className="relative">
+                                        <select 
+                                            value={customProduct.category}
+                                            onChange={e => setCustomProduct({...customProduct, category: e.target.value})}
+                                            className="w-full bg-slate-50 p-4 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT appearance-none"
+                                        >
+                                            {createCategories.map(cat => (
+                                                <option key={cat} value={cat}>{cat}</option>
+                                            ))}
+                                        </select>
+                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-xs">▼</div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-2 mb-1 block">Selling Price</label>
+                                        <div className="relative">
+                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">₹</span>
+                                            <input 
+                                                type="number" 
+                                                value={customProduct.price}
+                                                onChange={e => setCustomProduct({...customProduct, price: e.target.value})}
+                                                className="w-full bg-slate-50 pl-8 pr-4 py-4 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT"
+                                                placeholder="0"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-2 mb-1 block">MRP (Optional)</label>
+                                        <div className="relative">
+                                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">₹</span>
+                                            <input 
+                                                type="number" 
+                                                value={customProduct.mrp}
+                                                onChange={e => setCustomProduct({...customProduct, mrp: e.target.value})}
+                                                className="w-full bg-slate-50 pl-8 pr-4 py-4 rounded-xl font-bold text-slate-500 outline-none border border-transparent focus:border-brand-DEFAULT"
+                                                placeholder="0"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase ml-2 mb-1 block">Initial Stock</label>
+                                    <input 
+                                        type="number" 
+                                        value={customProduct.stock}
+                                        onChange={e => setCustomProduct({...customProduct, stock: e.target.value})}
+                                        className="w-full bg-slate-50 p-4 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT"
+                                        placeholder="Quantity available"
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase ml-2 mb-1 block">Description (Optional)</label>
+                                    <textarea 
+                                        value={customProduct.description}
+                                        onChange={e => setCustomProduct({...customProduct, description: e.target.value})}
+                                        className="w-full bg-slate-50 p-4 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT resize-none h-24"
+                                        placeholder="Short details about the item..."
+                                    />
+                                </div>
+
+                                <div className="pt-4">
+                                    <button 
+                                        onClick={handleCreateCustomProduct}
+                                        className="w-full bg-slate-900 text-white py-4 rounded-xl font-black text-sm shadow-xl hover:bg-black active:scale-[0.98] transition-all flex justify-center items-center gap-2"
+                                    >
+                                        <span>Create & Add to Inventory</span>
+                                        <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px]">+</span>
+                                    </button>
                                 </div>
                             </div>
-                        </div>
+                        ) : (
+                            // STANDARD SEARCH VIEW
+                            <>
+                                <div className="sticky top-0 bg-white z-10 pb-2">
+                                    <div className="relative mb-3">
+                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
+                                        <input 
+                                            value={searchTerm}
+                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            placeholder="Search global catalog..."
+                                            className="w-full bg-slate-50 border-none rounded-2xl py-4 pl-12 pr-4 font-bold text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-brand-DEFAULT outline-none transition-all"
+                                            autoFocus
+                                        />
+                                    </div>
 
-                        <div className="space-y-3 pb-24 pt-2">
-                            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest pl-1 mb-2">
-                                {selectedCategory === 'All' ? 'All Items' : selectedCategory}
-                            </h3>
-                            {catalogItems.length === 0 ? (
-                                <div className="text-center py-10 text-slate-400">
-                                    {searchTerm ? 'No matching items found' : 'Start typing to search...'}
+                                    <div className="relative">
+                                        <select
+                                            value={selectedCategory}
+                                            onChange={(e) => setSelectedCategory(e.target.value)}
+                                            className="w-full appearance-none bg-slate-50 border-none rounded-2xl py-3 pl-4 pr-10 font-bold text-slate-600 text-sm focus:ring-2 focus:ring-brand-DEFAULT outline-none cursor-pointer"
+                                        >
+                                            {allCategories.map(cat => (
+                                                <option key={cat} value={cat}>{cat} ({cat === 'All' ? INITIAL_PRODUCTS.length : INITIAL_PRODUCTS.filter(p => p.category === cat).length})</option>
+                                            ))}
+                                        </select>
+                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-xs">▼</div>
+                                    </div>
                                 </div>
-                            ) : (
-                                catalogItems.map(item => {
-                                    const displayPrice = draftPrices[item.id] !== undefined ? draftPrices[item.id] : item.storePrice;
-                                    const displayMrp = draftMrps[item.id] !== undefined ? draftMrps[item.id] : (item.mrp || item.price);
-                                    const displayStock = draftStocks[item.id] !== undefined ? draftStocks[item.id] : 10;
-                                    
-                                    return (
-                                        <div key={item.id} className="bg-white p-4 rounded-[1.5rem] shadow-card border border-slate-50 flex flex-col gap-3 transition-all">
-                                            <div className="flex items-center gap-4">
-                                                <div className="text-3xl w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center shadow-inner border border-slate-100">{item.emoji}</div>
-                                                <div>
-                                                    <div className="font-black text-slate-800 text-base">{item.name}</div>
-                                                    <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wide">{item.category}</div>
+
+                                <div className="space-y-3 pb-24 pt-2">
+                                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest pl-1 mb-2">
+                                        {selectedCategory === 'All' ? 'All Items' : selectedCategory}
+                                    </h3>
+                                    {catalogItems.length === 0 ? (
+                                        <div className="text-center py-10 text-slate-400">
+                                            {searchTerm ? 'No matching items found' : 'Start typing to search...'}
+                                        </div>
+                                    ) : (
+                                        catalogItems.map(item => {
+                                            const displayPrice = draftPrices[item.id] !== undefined ? draftPrices[item.id] : item.storePrice;
+                                            const displayMrp = draftMrps[item.id] !== undefined ? draftMrps[item.id] : (item.mrp || item.price);
+                                            const displayStock = draftStocks[item.id] !== undefined ? draftStocks[item.id] : 10;
+                                            
+                                            return (
+                                                <div key={item.id} className="bg-white p-4 rounded-[1.5rem] shadow-card border border-slate-50 flex flex-col gap-3 transition-all">
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="text-3xl w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center shadow-inner border border-slate-100">{item.emoji}</div>
+                                                        <div>
+                                                            <div className="font-black text-slate-800 text-base">{item.name}</div>
+                                                            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wide">{item.category}</div>
+                                                            
+                                                            {item.brands && item.brands.length > 0 ? (
+                                                                 <div className="mt-2 text-xs text-slate-500">
+                                                                     <div className="flex flex-wrap gap-1">
+                                                                         {item.brands.map((b,i) => (
+                                                                             <span key={i} className="bg-slate-100 px-2 py-0.5 rounded text-[10px] font-bold text-slate-600">{b.name}</span>
+                                                                         ))}
+                                                                     </div>
+                                                                     <p className="mt-1 text-[10px] text-brand-DEFAULT font-bold bg-brand-light inline-block px-1.5 rounded">Configure brands after adding</p>
+                                                                 </div>
+                                                            ) : (
+                                                                <div className="mt-1">
+                                                                    <span className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold">Qty: {getProductUnit(item)}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
                                                     
-                                                    {/* Brands Info (Detailed for Catalog) */}
-                                                    {item.brands && item.brands.length > 0 ? (
-                                                         <div className="mt-2 text-xs text-slate-500">
-                                                             <div className="flex flex-wrap gap-1">
-                                                                 {item.brands.map((b,i) => (
-                                                                     <span key={i} className="bg-slate-100 px-2 py-0.5 rounded text-[10px] font-bold text-slate-600">{b.name}</span>
-                                                                 ))}
-                                                             </div>
-                                                             <p className="mt-1 text-[10px] text-brand-DEFAULT font-bold bg-brand-light inline-block px-1.5 rounded">Configure brands after adding</p>
-                                                         </div>
-                                                    ) : (
-                                                        <div className="mt-1">
-                                                            <span className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold">Qty: {getProductUnit(item)}</span>
+                                                    {(!item.brands || item.brands.length === 0) && (
+                                                        <div className="bg-slate-50 rounded-xl p-2 flex gap-2 overflow-x-auto hide-scrollbar">
+                                                            <div className="flex-1 min-w-[70px]">
+                                                                <label className="text-[8px] font-bold text-slate-400 uppercase block pl-1">Price</label>
+                                                                <input 
+                                                                    type="number"
+                                                                    value={displayPrice}
+                                                                    onChange={(e) => {
+                                                                        const val = parseFloat(e.target.value);
+                                                                        setDraftPrices(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
+                                                                    }}
+                                                                    className="w-full bg-white rounded-lg px-2 py-1.5 text-xs font-bold text-slate-800 border border-slate-200 outline-none focus:border-brand-DEFAULT"
+                                                                />
+                                                            </div>
+                                                            <div className="flex-1 min-w-[70px]">
+                                                                <label className="text-[8px] font-bold text-slate-400 uppercase block pl-1">MRP</label>
+                                                                <input 
+                                                                    type="number"
+                                                                    value={displayMrp}
+                                                                    onChange={(e) => {
+                                                                        const val = parseFloat(e.target.value);
+                                                                        setDraftMrps(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
+                                                                    }}
+                                                                    className="w-full bg-white rounded-lg px-2 py-1.5 text-xs font-bold text-slate-500 border border-slate-200 outline-none focus:border-brand-DEFAULT"
+                                                                />
+                                                            </div>
+                                                            <div className="flex-1 min-w-[60px]">
+                                                                <label className="text-[8px] font-bold text-slate-400 uppercase block pl-1">Qty</label>
+                                                                <input 
+                                                                    type="number"
+                                                                    value={displayStock}
+                                                                    onChange={(e) => {
+                                                                        const val = parseInt(e.target.value);
+                                                                        setDraftStocks(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
+                                                                    }}
+                                                                    className="w-full bg-white rounded-lg px-2 py-1.5 text-xs font-bold text-slate-800 border border-slate-200 outline-none focus:border-brand-DEFAULT text-center"
+                                                                />
+                                                            </div>
                                                         </div>
                                                     )}
-                                                </div>
-                                            </div>
-                                            
-                                            {/* Quick Config Row (Only for non-branded, branded needs detailed config in inventory tab) */}
-                                            {(!item.brands || item.brands.length === 0) && (
-                                                <div className="bg-slate-50 rounded-xl p-2 flex gap-2 overflow-x-auto hide-scrollbar">
-                                                    <div className="flex-1 min-w-[70px]">
-                                                        <label className="text-[8px] font-bold text-slate-400 uppercase block pl-1">Price</label>
-                                                        <input 
-                                                            type="number"
-                                                            value={displayPrice}
-                                                            onChange={(e) => {
-                                                                const val = parseFloat(e.target.value);
-                                                                setDraftPrices(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
-                                                            }}
-                                                            className="w-full bg-white rounded-lg px-2 py-1.5 text-xs font-bold text-slate-800 border border-slate-200 outline-none focus:border-brand-DEFAULT"
-                                                        />
-                                                    </div>
-                                                    <div className="flex-1 min-w-[70px]">
-                                                        <label className="text-[8px] font-bold text-slate-400 uppercase block pl-1">MRP</label>
-                                                        <input 
-                                                            type="number"
-                                                            value={displayMrp}
-                                                            onChange={(e) => {
-                                                                const val = parseFloat(e.target.value);
-                                                                setDraftMrps(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
-                                                            }}
-                                                            className="w-full bg-white rounded-lg px-2 py-1.5 text-xs font-bold text-slate-500 border border-slate-200 outline-none focus:border-brand-DEFAULT"
-                                                        />
-                                                    </div>
-                                                    <div className="flex-1 min-w-[60px]">
-                                                        <label className="text-[8px] font-bold text-slate-400 uppercase block pl-1">Qty</label>
-                                                        <input 
-                                                            type="number"
-                                                            value={displayStock}
-                                                            onChange={(e) => {
-                                                                const val = parseInt(e.target.value);
-                                                                setDraftStocks(prev => ({...prev, [item.id]: isNaN(val) ? 0 : val}));
-                                                            }}
-                                                            className="w-full bg-white rounded-lg px-2 py-1.5 text-xs font-bold text-slate-800 border border-slate-200 outline-none focus:border-brand-DEFAULT text-center"
-                                                        />
-                                                    </div>
-                                                </div>
-                                            )}
 
-                                            <button 
-                                                onClick={() => handleInventoryUpdate(item, displayPrice, true, displayStock, displayMrp)}
-                                                className="w-full bg-slate-900 text-white py-3 rounded-xl text-sm font-black shadow-lg hover:bg-emerald-600 active:scale-95 transition-all flex justify-center items-center gap-2"
-                                            >
-                                                <span>ADD TO STORE</span>
-                                                <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px]">+</span>
-                                            </button>
-                                        </div>
-                                    );
-                                })
-                            )}
-                        </div>
+                                                    <button 
+                                                        onClick={() => handleInventoryUpdate(item, displayPrice, true, displayStock, displayMrp)}
+                                                        className="w-full bg-slate-900 text-white py-3 rounded-xl text-sm font-black shadow-lg hover:bg-emerald-600 active:scale-95 transition-all flex justify-center items-center gap-2"
+                                                    >
+                                                        <span>ADD TO STORE</span>
+                                                        <span className="bg-white/20 px-1.5 py-0.5 rounded text-[10px]">+</span>
+                                                    </button>
+                                                </div>
+                                            );
+                                        })
+                                    )}
+                                </div>
+                            </>
+                        )}
                     </div>
                 )}
             </div>
         )}
 
-        {/* ORDERS TAB */}
+        {/* ORDERS TAB (SAME) */}
         {activeTab === 'ORDERS' && (
             <div className="space-y-4 animate-fade-in pb-24">
                 <h2 className="font-black text-slate-800 text-lg">Live Orders</h2>
@@ -1026,7 +1228,7 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
                             </button>
                         </div>
 
-                        {/* Map Section */}
+                        {/* Map Section - Preview Only */}
                         <div className="h-48 rounded-[2rem] overflow-hidden shadow-md border border-white">
                             <MapVisualizer 
                                 stores={[myStore]} 
@@ -1036,94 +1238,108 @@ export const StoreApp: React.FC<StoreAppProps> = ({ user, onLogout }) => {
                                 onSelectStore={() => {}}
                                 mode="PICKUP" 
                                 showRoute={false}
+                                enableLiveTracking={false} // Disable internal to force prop usage
                                 onRequestLocation={handleMapLocationRequest}
                             />
                         </div>
                      </>
                  ) : (
-                     <div className="bg-white p-6 rounded-[2.5rem] shadow-card space-y-4 animate-scale-in">
-                        <h3 className="text-lg font-black text-slate-800 text-center mb-2">Edit Store Profile</h3>
-                        
-                        <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-2">Store Name</label>
-                            <input 
-                                value={profileForm.name || ''}
-                                onChange={e => setProfileForm({...profileForm, name: e.target.value})}
-                                className="w-full bg-slate-50 p-3 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT"
-                            />
-                        </div>
-
-                        <div>
-                            <div className="flex justify-between items-center mb-1">
-                                <label className="text-[10px] font-bold text-slate-400 uppercase ml-2">Store Address</label>
-                                <button 
+                     <div className="bg-white rounded-[2.5rem] shadow-card overflow-hidden animate-scale-in">
+                        {/* Map Section - Top Priority (Expanded Height) */}
+                        <div className="relative h-72 w-full bg-slate-100">
+                             <MapVisualizer 
+                                stores={[]} // Hide other markers in picker mode
+                                userLat={userLocation?.lat || null} // Blue dot still useful
+                                userLng={userLocation?.lng || null}
+                                selectedStore={null}
+                                onSelectStore={() => {}}
+                                mode="PICKUP"
+                                
+                                // CRITICAL: Enable Selection Mode to show the PIN
+                                isSelectionMode={true}
+                                
+                                // CRITICAL: When drag ends, update form and reverse geocode
+                                onMapClick={handleMapDragEnd}
+                                
+                                // CRITICAL: Force map to center on GPS coords if button clicked
+                                forcedCenter={mapForcedCenter}
+                             />
+                             
+                             {/* Floating "Snap to Live" Button */}
+                             <div className="absolute bottom-4 right-4 z-[400]">
+                                 <button 
                                     onClick={handleGPSLocation}
                                     disabled={isLocating}
-                                    className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 hover:bg-blue-100 transition-colors"
-                                >
+                                    className="bg-white text-blue-600 px-4 py-3 rounded-2xl font-black text-xs shadow-lg flex items-center gap-2 hover:bg-blue-50 transition-all active:scale-95"
+                                 >
                                     {isLocating ? (
-                                        <>
-                                            <span className="animate-spin w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full block"></span>
-                                            <span>Locating...</span>
-                                        </>
+                                        <span className="animate-spin w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full"></span>
                                     ) : (
-                                        <>
-                                            <span>📍</span>
-                                            <span>Use Current Location</span>
-                                        </>
+                                        <span className="text-lg">📍</span>
                                     )}
-                                </button>
-                            </div>
-                            <textarea 
-                                value={profileForm.address || ''}
-                                onChange={e => setProfileForm({...profileForm, address: e.target.value})}
-                                className="w-full bg-slate-50 p-3 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT h-24 resize-none"
-                            />
+                                    Snap to Live Location
+                                 </button>
+                             </div>
+                             
+                             {/* Address Indicator Overlay */}
+                             {(profileForm.lat && profileForm.lng) && (
+                                 <div className="absolute top-4 left-4 right-4 z-[400] pointer-events-none">
+                                     <div className="bg-white/90 backdrop-blur-md px-4 py-2 rounded-2xl shadow-lg border border-white/50 text-center">
+                                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Pin Coordinates</p>
+                                        <p className="text-xs font-black text-slate-800 font-mono">
+                                            {profileForm.lat.toFixed(6)}, {profileForm.lng.toFixed(6)}
+                                        </p>
+                                     </div>
+                                 </div>
+                             )}
                         </div>
 
-                        {/* Map Preview of Edited Location */}
-                        {(profileForm.lat && profileForm.lng) && (
-                            <div className="h-48 rounded-xl overflow-hidden shadow-inner border border-slate-100 mb-2 relative">
-                                <MapVisualizer 
-                                    stores={[mapStore as Store]} 
-                                    userLat={userLocation?.lat || null} 
-                                    userLng={userLocation?.lng || null}
-                                    selectedStore={mapStore as Store}
-                                    onSelectStore={() => {}}
-                                    mode="PICKUP" 
-                                    showRoute={false}
-                                    onRequestLocation={handleMapLocationRequest}
-                                    onMapClick={handleMapClick}
+                        {/* Form Fields */}
+                        <div className="p-6 space-y-5">
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase ml-2 mb-1 block">Store Name</label>
+                                <input 
+                                    value={profileForm.name || ''}
+                                    onChange={e => setProfileForm({...profileForm, name: e.target.value})}
+                                    className="w-full bg-slate-50 p-4 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT"
+                                    placeholder="Enter store name..."
                                 />
-                                <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-white/80 backdrop-blur px-3 py-1 rounded-full text-[10px] font-bold text-slate-500 shadow-sm z-[1000] pointer-events-none">
-                                    Tap map to refine location
+                            </div>
+
+                            <div>
+                                <div className="flex justify-between items-center mb-1 pl-2">
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase">Store Address</label>
+                                    {isFetchingAddress && (
+                                        <span className="text-[10px] font-bold text-brand-DEFAULT animate-pulse">Updating from Pin...</span>
+                                    )}
                                 </div>
+                                <textarea 
+                                    value={profileForm.address || ''}
+                                    onChange={e => setProfileForm({...profileForm, address: e.target.value})}
+                                    className={`w-full bg-slate-50 p-4 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT h-24 resize-none transition-all ${isFetchingAddress ? 'opacity-50' : 'opacity-100'}`}
+                                    placeholder="Drag map pin to auto-fill address..."
+                                />
                             </div>
-                        )}
 
-                        <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-2">UPI ID</label>
-                            <input 
-                                value={profileForm.upiId || ''}
-                                onChange={e => setProfileForm({...profileForm, upiId: e.target.value})}
-                                className="w-full bg-slate-50 p-3 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT"
-                            />
-                        </div>
-                        
-                        {profileForm.lat && (
-                            <div className="text-[10px] text-slate-400 font-mono text-center bg-slate-50 py-1 rounded-lg">
-                                Coords: {profileForm.lat.toFixed(4)}, {profileForm.lng?.toFixed(4)}
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase ml-2 mb-1 block">UPI ID</label>
+                                <input 
+                                    value={profileForm.upiId || ''}
+                                    onChange={e => setProfileForm({...profileForm, upiId: e.target.value})}
+                                    className="w-full bg-slate-50 p-4 rounded-xl font-bold text-slate-800 outline-none border border-transparent focus:border-brand-DEFAULT"
+                                    placeholder="yourname@upi"
+                                />
                             </div>
-                        )}
-
-                        <div className="flex gap-3 pt-2">
-                            <button onClick={() => setIsEditingProfile(false)} className="flex-1 py-3 bg-slate-100 font-bold text-slate-500 rounded-xl">Cancel</button>
-                            <button onClick={saveProfile} className="flex-1 py-3 bg-slate-900 text-white font-bold rounded-xl shadow-lg">Save Changes</button>
+                            
+                            <div className="flex gap-3 pt-2">
+                                <button onClick={() => setIsEditingProfile(false)} className="flex-1 py-4 bg-slate-100 font-bold text-slate-500 rounded-2xl hover:bg-slate-200 transition-colors">Cancel</button>
+                                <button onClick={saveProfile} className="flex-1 py-4 bg-slate-900 text-white font-bold rounded-2xl shadow-lg hover:scale-[1.02] active:scale-[0.98] transition-transform">Save Changes</button>
+                            </div>
                         </div>
                      </div>
                  )}
 
-                 <button onClick={onLogout} className="w-full py-4 bg-red-50 text-red-500 font-bold rounded-2xl border border-red-100">Log Out</button>
+                 <button onClick={onLogout} className="w-full py-4 bg-red-50 text-red-500 font-bold rounded-2xl border border-red-100 hover:bg-red-100 transition-colors">Log Out</button>
             </div>
         )}
 

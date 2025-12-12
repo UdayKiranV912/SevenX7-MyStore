@@ -74,7 +74,7 @@ export const getStoreInventory = async (storeId: string): Promise<InventoryItem[
 
     if (error) {
         console.error("getStoreInventory DB Error:", error.message);
-        // Fallback: return catalog with everything inactive, so UI still loads
+        // Fallback: return catalog
         return INITIAL_PRODUCTS.map(catalogItem => ({
             ...catalogItem,
             inStock: false,
@@ -85,22 +85,57 @@ export const getStoreInventory = async (storeId: string): Promise<InventoryItem[
         }));
     }
 
-    // Map Global Catalog to Inventory Items
-    return INITIAL_PRODUCTS.map(catalogItem => {
+    // Identify which items are custom (not in INITIAL_PRODUCTS)
+    const staticIds = new Set(INITIAL_PRODUCTS.map(p => p.id));
+    const customIds = dbInv.map((i: any) => i.product_id).filter((id: string) => !staticIds.has(id));
+
+    // Fetch Custom Product Details
+    let customProducts: any[] = [];
+    if (customIds.length > 0) {
+        const { data: dbProds } = await supabase
+            .from('products')
+            .select('*')
+            .in('id', customIds);
+        if (dbProds) customProducts = dbProds;
+    }
+
+    // 1. Map Global Catalog to Inventory Items
+    const catalogInventory = INITIAL_PRODUCTS.map(catalogItem => {
       const dbItem = dbInv?.find((i: any) => i.product_id === catalogItem.id);
-      
       return {
         ...catalogItem,
         inStock: dbItem ? dbItem.in_stock : false,
         stock: dbItem ? (dbItem.stock || 0) : 0,
-        storePrice: dbItem ? dbItem.price : catalogItem.price, // Use store price or default MRP
-        isActive: !!dbItem, // If record exists, it's "Active" in management list
-        brandDetails: dbItem?.brand_data || {} // Load saved brand details
+        storePrice: dbItem ? dbItem.price : catalogItem.price, 
+        isActive: !!dbItem, 
+        brandDetails: dbItem?.brand_data || {} 
       };
     });
+
+    // 2. Map Custom Items
+    const customInventory = customProducts.map(prod => {
+        const dbItem = dbInv?.find((i: any) => i.product_id === prod.id);
+        return {
+            id: prod.id,
+            name: prod.name,
+            price: prod.base_price,
+            mrp: prod.base_price, // Assuming same for custom unless extended
+            emoji: prod.image_url || '📦',
+            category: prod.category,
+            description: prod.description,
+            // Inventory fields
+            inStock: dbItem ? dbItem.in_stock : true,
+            stock: dbItem ? (dbItem.stock || 0) : 0,
+            storePrice: dbItem ? dbItem.price : prod.base_price,
+            isActive: true, // Custom items are active by default if fetched
+            brandDetails: dbItem?.brand_data || {}
+        } as InventoryItem;
+    });
+
+    return [...customInventory, ...catalogInventory];
+
   } catch (e) {
       console.error("getStoreInventory Exception:", e);
-      // Return default catalog on crash
       return INITIAL_PRODUCTS.map(c => ({
           ...c, 
           inStock: false, 
@@ -135,6 +170,38 @@ export const updateInventoryItem = async (
   if (error) throw error;
 };
 
+// 3.5 Create NEW Custom Product & Add to Inventory
+export const createCustomProduct = async (storeId: string, product: InventoryItem) => {
+    // 1. Insert into Products Table
+    const { error: prodError } = await supabase
+        .from('products')
+        .insert({
+            id: product.id,
+            name: product.name,
+            category: product.category,
+            image_url: product.emoji, 
+            description: product.description,
+            base_price: product.price,
+            brands: product.brands // Save brands array to DB
+        })
+        .select()
+        .single();
+
+    if (prodError) {
+        console.warn("Could not insert into products table:", prodError.message);
+    }
+
+    // 2. Add to Inventory
+    await updateInventoryItem(
+        storeId, 
+        product.id, 
+        product.price, 
+        product.inStock, 
+        product.stock, 
+        product.brandDetails
+    );
+};
+
 // 3.5 Delete Inventory Item (Remove from management list)
 export const deleteInventoryItem = async (storeId: string, productId: string) => {
   const { error } = await supabase
@@ -148,7 +215,6 @@ export const deleteInventoryItem = async (storeId: string, productId: string) =>
 // 4. Fetch Incoming Orders for Store
 export const getIncomingOrders = async (storeId: string): Promise<Order[]> => {
   try {
-    // Step 1: Fetch Orders (Avoid JOIN initially to prevent errors if relationship is missing)
     const { data: orders, error } = await supabase
       .from('orders')
       .select('*')

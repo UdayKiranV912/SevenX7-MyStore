@@ -12,7 +12,7 @@ import { fetchLiveStores, fetchStoreProducts, subscribeToStoreInventory } from '
 import { saveOrder } from '../../services/orderService';
 import SevenX7Logo from '../SevenX7Logo';
 import { MOCK_STORES } from '../../constants';
-import { watchLocation, clearWatch } from '../../services/locationService';
+import { watchLocation, clearWatch, getBrowserLocation } from '../../services/locationService';
 
 interface CustomerAppProps {
   user: UserState;
@@ -38,8 +38,12 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
 
   // 1. Live Location Tracking (App Level)
   useEffect(() => {
-    // If user provided a static location, start there.
-    // Then watch for movement.
+    // Initial fetch to get a quick lock
+    getBrowserLocation().then(loc => {
+        setCurrentLocation({ lat: loc.lat, lng: loc.lng });
+    }).catch(e => console.log("Initial loc fail", e));
+
+    // Watch for movement
     const watchId = watchLocation(
         (loc) => {
             setCurrentLocation({ lat: loc.lat, lng: loc.lng });
@@ -216,7 +220,8 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
                              selectedStore={null}
                              onSelectStore={(s) => { setSelectedStore(s); setActiveView('STORE'); }}
                              mode="DELIVERY"
-                             enableLiveTracking={true}
+                             enableLiveTracking={false} // Disable internal tracking to ensure sync
+                             onRequestLocation={() => getBrowserLocation().then(loc => setCurrentLocation({lat: loc.lat, lng: loc.lng}))}
                          />
                          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-lg text-xs font-bold text-slate-800 pointer-events-none">
                              {stores.length} Stores Nearby

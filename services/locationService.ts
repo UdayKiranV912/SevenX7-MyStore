@@ -1,5 +1,4 @@
 
-
 /**
  * Service for Location Utilities using Free APIs
  * - OSRM for Routing (Driving Directions)
@@ -22,8 +21,8 @@ export const getBrowserLocation = (): Promise<{ lat: number; lng: number; accura
 
     const options = {
       enableHighAccuracy: true, // Critical for street-level accuracy
-      timeout: 15000,           // 15s timeout
-      maximumAge: 0,            // Force fresh reading
+      timeout: 20000,           // Increased to 20s for better GPS lock chance
+      maximumAge: 0,            // Force fresh reading, no cache
     };
 
     navigator.geolocation.getCurrentPosition(
@@ -58,6 +57,7 @@ export const watchLocation = (
   
   return navigator.geolocation.watchPosition(
     (pos) => {
+      // Filter out low accuracy updates if needed, but for now accept all to get *something*
       onLocation({
         lat: pos.coords.latitude,
         lng: pos.coords.longitude,
@@ -65,14 +65,13 @@ export const watchLocation = (
       });
     },
     (err) => {
-      // Don't log timeout errors aggressively as they happen often in high-accuracy mode
       if (err.code !== 3) console.warn("Watch Position Error:", err);
       onError(err);
     },
     { 
       enableHighAccuracy: true, 
-      timeout: 10000, // Check every 10s or sooner if moved
-      maximumAge: 0   // Force fresh GPS data every time
+      timeout: 20000, 
+      maximumAge: 0 
     }
   );
 };
