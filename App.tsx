@@ -18,8 +18,8 @@ const App: React.FC = () => {
       id: 'demo-user',
       name: 'Demo Store Owner',
       phone: '9999999999',
-      location: null,
-      address: 'Indiranagar, Bangalore',
+      location: null, // Force live GPS
+      address: '',    // Force reverse geocode
       role: 'store_owner'
     });
   };
@@ -30,8 +30,8 @@ const App: React.FC = () => {
       id: 'demo-customer',
       name: 'Rahul Customer',
       phone: '9876543210',
-      location: { lat: 12.9716, lng: 77.5946 }, // Bangalore Center
-      address: 'MG Road, Bangalore',
+      location: null, // Force live GPS
+      address: '',    // Force reverse geocode
       role: 'customer'
     });
   };

@@ -10,9 +10,10 @@ import { UserProfile } from '../UserProfile';
 import { PaymentGateway } from '../PaymentGateway';
 import { fetchLiveStores, fetchStoreProducts, subscribeToStoreInventory } from '../../services/storeService';
 import { saveOrder } from '../../services/orderService';
+import { findNearbyStores } from '../../services/geminiService';
 import SevenX7Logo from '../SevenX7Logo';
 import { MOCK_STORES } from '../../constants';
-import { watchLocation, clearWatch, getBrowserLocation } from '../../services/locationService';
+import { watchLocation, clearWatch, getBrowserLocation, reverseGeocode } from '../../services/locationService';
 
 interface CustomerAppProps {
   user: UserState;
@@ -28,20 +29,36 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   
+  // Address & Location State
+  const [currentAddress, setCurrentAddress] = useState<string>(user.address || 'Locating...');
+  const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(user.location);
+  
   // Modals
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [showPayment, setShowPayment] = useState(false);
   const [pendingOrderDetails, setPendingOrderDetails] = useState<any>(null);
 
-  // User Location State - Initialize with user prop, but update live
-  const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(user.location || { lat: 12.9716, lng: 77.5946 });
-
-  // 1. Live Location Tracking (App Level)
+  // 1. Live Location & Address Tracking (App Level)
   useEffect(() => {
-    // Initial fetch to get a quick lock
-    getBrowserLocation().then(loc => {
-        setCurrentLocation({ lat: loc.lat, lng: loc.lng });
-    }).catch(e => console.log("Initial loc fail", e));
+    // Immediate fetch to get a quick lock
+    const initLocation = async () => {
+        try {
+            const loc = await getBrowserLocation();
+            setCurrentLocation({ lat: loc.lat, lng: loc.lng });
+            
+            // Immediately Reverse Geocode for Header
+            const address = await reverseGeocode(loc.lat, loc.lng);
+            if (address) setCurrentAddress(address);
+        } catch (e) {
+            console.log("Initial loc fail", e);
+            // Fallback if no location permissions (Default to Bangalore Center)
+            if (!user.location) {
+                 setCurrentLocation({ lat: 12.9716, lng: 77.5946 }); 
+                 setCurrentAddress("Bangalore, India");
+            }
+        }
+    };
+    initLocation();
 
     // Watch for movement
     const watchId = watchLocation(
@@ -56,7 +73,7 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
     };
   }, []);
 
-  // 2. Load Stores based on Location
+  // 2. Load Stores based on Location (Hybrid: DB -> OSM -> Mock)
   useEffect(() => {
     const lat = currentLocation?.lat || 12.9716;
     const lng = currentLocation?.lng || 77.5946;
@@ -64,10 +81,19 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
     const loadStores = async () => {
         setIsLoading(true);
         try {
+            // 1. Try fetching registered stores from Supabase
             let liveStores = await fetchLiveStores(lat, lng);
+            
+            // 2. If no registered stores, use OpenStreetMap (Real World Data)
             if (liveStores.length === 0) {
-                 liveStores = MOCK_STORES;
+                 liveStores = await findNearbyStores(lat, lng);
             }
+            
+            // 3. Fallback (should rarely happen if OSM works)
+            if (liveStores.length === 0) {
+                liveStores = MOCK_STORES;
+            }
+
             setStores(liveStores);
         } catch (e) {
             console.error("Store Fetch Failed", e);
@@ -78,7 +104,7 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
     };
     
     loadStores();
-  }, [currentLocation]); // Re-fetch if location changes significantly? Maybe throttle this in real app.
+  }, [currentLocation]); 
 
   // 3. Load Store Products when a Store is Selected
   useEffect(() => {
@@ -102,6 +128,20 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
 
       loadProducts();
   }, [selectedStore]);
+
+  // Handle "Locate Me" Action
+  const handleRefreshLocation = async () => {
+      setCurrentAddress("Updating location...");
+      try {
+          const loc = await getBrowserLocation();
+          setCurrentLocation({ lat: loc.lat, lng: loc.lng });
+          const address = await reverseGeocode(loc.lat, loc.lng);
+          if (address) setCurrentAddress(address);
+      } catch (e) {
+          alert("Could not update location.");
+          setCurrentAddress(user.address || "Unknown Location");
+      }
+  };
 
   // Cart Helpers
   const addToCart = (product: Product, quantity: number = 1, brandName: string = 'Generic', price?: number) => {
@@ -161,7 +201,7 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
           mode: 'DELIVERY',
           deliveryType: pendingOrderDetails.deliveryType,
           scheduledTime: pendingOrderDetails.scheduledTime,
-          deliveryAddress: user.address || 'Current Location',
+          deliveryAddress: currentAddress,
           storeName: cart[0].storeName,
           storeLocation: selectedStore ? { lat: selectedStore.lat, lng: selectedStore.lng } : undefined,
           userLocation: currentLocation || undefined,
@@ -189,9 +229,9 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
              </div>
              <div className="flex items-center gap-3">
                  {/* Location Pill */}
-                 <div className="bg-slate-50 border border-slate-100 rounded-full px-3 py-1.5 flex items-center gap-2 max-w-[150px]">
-                     <span className="text-emerald-500 text-xs">📍</span>
-                     <span className="text-[10px] font-bold text-slate-700 truncate">{user.address || 'Bangalore, India'}</span>
+                 <div className="bg-slate-50 border border-slate-100 rounded-full px-3 py-1.5 flex items-center gap-2 max-w-[150px] cursor-pointer" onClick={handleRefreshLocation}>
+                     <span className="text-emerald-500 text-xs animate-pulse">📍</span>
+                     <span className="text-[10px] font-bold text-slate-700 truncate">{currentAddress}</span>
                  </div>
                  {/* Cart Icon */}
                  <button onClick={() => setActiveView('CART')} className="relative p-2 bg-slate-100 rounded-xl hover:bg-slate-200 transition-colors">
@@ -211,8 +251,8 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
             {/* HOME VIEW: Map & Nearby Stores */}
             {activeView === 'HOME' && (
                 <div className="animate-fade-in p-4 space-y-4">
-                     {/* Map */}
-                     <div className="h-64 rounded-[2.5rem] overflow-hidden shadow-soft-xl relative border-4 border-white">
+                     {/* Map - Increased Height for Impact */}
+                     <div className="h-80 rounded-[2.5rem] overflow-hidden shadow-soft-xl relative border-4 border-white">
                          <MapVisualizer 
                              stores={stores}
                              userLat={currentLocation?.lat || null}
@@ -220,8 +260,8 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
                              selectedStore={null}
                              onSelectStore={(s) => { setSelectedStore(s); setActiveView('STORE'); }}
                              mode="DELIVERY"
-                             enableLiveTracking={false} // Disable internal tracking to ensure sync
-                             onRequestLocation={() => getBrowserLocation().then(loc => setCurrentLocation({lat: loc.lat, lng: loc.lng}))}
+                             enableLiveTracking={false} // Disable internal tracking as we control it here
+                             onRequestLocation={handleRefreshLocation}
                          />
                          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-lg text-xs font-bold text-slate-800 pointer-events-none">
                              {stores.length} Stores Nearby
@@ -245,7 +285,7 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
                                  </div>
                                  <div className="flex-1">
                                      <h3 className="font-black text-slate-800 text-base">{store.name}</h3>
-                                     <p className="text-xs font-bold text-slate-400">{store.distance} • ⭐ {store.rating}</p>
+                                     <p className="text-xs font-bold text-slate-400">{store.distance} • ⭐ {store.rating ? store.rating.toFixed(1) : '4.5'}</p>
                                      <div className="flex gap-1 mt-2">
                                          {store.type === 'dairy' && <span className="text-[9px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-bold">Milk & Curd</span>}
                                          {store.type === 'produce' && <span className="text-[9px] bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded font-bold">Fresh Veg</span>}
@@ -333,8 +373,12 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
             {/* PROFILE VIEW */}
             {activeView === 'PROFILE' && (
                 <UserProfile 
-                    user={{...user, location: currentLocation}} 
-                    onUpdateUser={(updates) => { /* State lifted or handled by SWR/Context in real app */ }} 
+                    user={{...user, location: currentLocation, address: currentAddress}} 
+                    onUpdateUser={(updates) => { 
+                         // Sync updates back to local state if needed
+                         if (updates.address) setCurrentAddress(updates.address);
+                         if (updates.location) setCurrentLocation(updates.location);
+                    }} 
                     onLogout={onLogout} 
                 />
             )}
@@ -349,8 +393,8 @@ export const CustomerApp: React.FC<CustomerAppProps> = ({ user, onLogout }) => {
                         onAddProduct={(p) => addToCart(p, 1, 'Generic', p.price)}
                         mode="DELIVERY"
                         onModeChange={() => {}}
-                        deliveryAddress={user.address || ''}
-                        onAddressChange={() => {}}
+                        deliveryAddress={currentAddress}
+                        onAddressChange={(addr) => setCurrentAddress(addr)}
                         activeStore={selectedStore}
                         stores={stores}
                         userLocation={currentLocation}
